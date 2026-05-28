@@ -27,4 +27,22 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Run update
-        run: python update_data.py
+        id: update
+        run: |
+          OUTPUT=$(python update_data.py 2>&1)
+          echo "$OUTPUT"
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Send email notification
+        run: |
+          curl -s -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer ${{ secrets.RESEND_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "from": "onboarding@resend.dev",
+              "to": "myleswittman@gmail.com",
+              "subject": "Enchanted Crown Fund — Data Update ${{ github.run_number }}",
+              "text": "Daily High/Low update completed.\n\n${{ steps.update.outputs.summary }}\n\nRun: https://github.com/myleswittmandesigns/Enchanted-Crown-Fund/actions/runs/${{ github.run_id }}"
+            }'
