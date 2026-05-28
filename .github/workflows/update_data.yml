@@ -37,7 +37,7 @@ jobs:
 
       - name: Send email notification
         run: |
-          curl -s -X POST https://api.resend.com/emails \
+          curl -X POST https://api.resend.com/emails \
             -H "Authorization: Bearer ${{ secrets.RESEND_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{
