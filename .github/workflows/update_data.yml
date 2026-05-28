@@ -27,22 +27,36 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Run update
-        id: update
-        run: |
-          OUTPUT=$(python update_data.py 2>&1)
-          echo "$OUTPUT"
-          echo "summary<<EOF" >> $GITHUB_OUTPUT
-          echo "$OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+        run: python update_data.py 2>&1 | tee /tmp/update_output.txt
 
       - name: Send email notification
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          curl -X POST https://api.resend.com/emails \
-            -H "Authorization: Bearer ${{ secrets.RESEND_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
+          python3 - <<'EOF'
+          import json, os, urllib.request
+
+          summary = open("/tmp/update_output.txt").read().strip()
+          run_id = os.environ["RUN_ID"]
+          run_number = os.environ["RUN_NUMBER"]
+
+          body = {
               "from": "onboarding@resend.dev",
               "to": "myleswittman@gmail.com",
-              "subject": "Enchanted Crown Fund — Data Update ${{ github.run_number }}",
-              "text": "Daily High/Low update completed.\n\n${{ steps.update.outputs.summary }}\n\nRun: https://github.com/myleswittmandesigns/Enchanted-Crown-Fund/actions/runs/${{ github.run_id }}"
-            }'
+              "subject": f"Enchanted Crown Fund — Data Update #{run_number}",
+              "text": f"Daily High/Low update completed.\n\n{summary}\n\nRun: https://github.com/myleswittmandesigns/Enchanted-Crown-Fund/actions/runs/{run_id}"
+          }
+
+          req = urllib.request.Request(
+              "https://api.resend.com/emails",
+              data=json.dumps(body).encode(),
+              headers={
+                  "Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
+                  "Content-Type": "application/json"
+              }
+          )
+          with urllib.request.urlopen(req) as resp:
+              print("Resend response:", resp.status, resp.read().decode())
+          EOF
