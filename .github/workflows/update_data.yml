@@ -41,6 +41,11 @@ jobs:
           summary = open("/tmp/update_output.txt").read().strip()
           run_id = os.environ["RUN_ID"]
           run_number = os.environ["RUN_NUMBER"]
+          api_key = os.environ.get("RESEND_API_KEY")
+
+          if not api_key:
+              print("Warning: RESEND_API_KEY not configured, skipping email")
+              exit(0)
 
           body = {
               "from": "onboarding@resend.dev",
@@ -53,13 +58,15 @@ jobs:
               "https://api.resend.com/emails",
               data=json.dumps(body).encode(),
               headers={
-                  "Authorization": f"Bearer {os.environ['RESEND_API_KEY']}",
+                  "Authorization": f"Bearer {api_key}",
                   "Content-Type": "application/json"
               }
           )
           try:
               with urllib.request.urlopen(req) as resp:
-                  print("Resend response:", resp.status, resp.read().decode())
+                  print("Email sent successfully:", resp.status, resp.read().decode())
           except urllib.error.HTTPError as e:
-              print("Resend error:", e.code, e.read().decode())
+              print(f"Failed to send email (HTTP {e.code}):", e.read().decode())
+              exit(0)
           EOF
+        continue-on-error: true
