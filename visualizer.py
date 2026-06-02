@@ -217,6 +217,108 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
+# ── Recent N-day chart ────────────────────────────────────────────────────────
+st.divider()
+st.markdown(f"### Last {N} Trading Days")
+
+# Slice to most recent N rows from full history (need extra rows behind for indicators)
+recent_df   = df_full.tail(N).reset_index(drop=True)
+
+# Recompute indicators on full history, take last N rows
+sma_r, upper_r, lower_r = compute_bollinger(df_full["Close"], N, K)
+rsi_r                    = compute_rsi(df_full["Close"], period=R)
+buy_r, sell_r            = compute_signals(df_full["Close"], upper_r, lower_r)
+
+recent_sma   = sma_r.tail(N).reset_index(drop=True)
+recent_upper = upper_r.tail(N).reset_index(drop=True)
+recent_lower = lower_r.tail(N).reset_index(drop=True)
+recent_rsi   = rsi_r.tail(N).reset_index(drop=True)
+recent_buy   = buy_r.tail(N).reset_index(drop=True)
+recent_sell  = sell_r.tail(N).reset_index(drop=True)
+
+fig2 = make_subplots(
+    rows=2, cols=1,
+    shared_xaxes=True,
+    row_heights=[0.68, 0.32],
+    vertical_spacing=0.04,
+)
+
+fig2.add_trace(go.Candlestick(
+    x=recent_df["Date"],
+    open=recent_df["Open"], high=recent_df["High"],
+    low=recent_df["Low"],   close=recent_df["Close"],
+    name="Price",
+    increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
+    decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
+    showlegend=False,
+), row=1, col=1)
+
+fig2.add_trace(go.Scatter(
+    x=recent_df["Date"], y=recent_sma,
+    mode="lines", name=f"SMA({N})",
+    line=dict(color="orange", width=1.5),
+), row=1, col=1)
+
+fig2.add_trace(go.Scatter(
+    x=recent_df["Date"], y=recent_upper,
+    mode="lines", name=f"BB Upper (×{K}σ)",
+    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+), row=1, col=1)
+
+fig2.add_trace(go.Scatter(
+    x=recent_df["Date"], y=recent_lower,
+    mode="lines", name=f"BB Lower (×{K}σ)",
+    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+    fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
+), row=1, col=1)
+
+if show_signals:
+    fig2.add_trace(go.Scatter(
+        x=recent_df["Date"][recent_buy], y=recent_df["Low"][recent_buy] * 0.98,
+        mode="markers", name="Buy",
+        marker=dict(symbol="triangle-up", size=12, color="lime", line=dict(color="green", width=1)),
+    ), row=1, col=1)
+
+    fig2.add_trace(go.Scatter(
+        x=recent_df["Date"][recent_sell], y=recent_df["High"][recent_sell] * 1.02,
+        mode="markers", name="Sell",
+        marker=dict(symbol="triangle-down", size=12, color="red", line=dict(color="darkred", width=1)),
+    ), row=1, col=1)
+
+fig2.add_trace(go.Scatter(
+    x=recent_df["Date"], y=recent_rsi,
+    mode="lines", name=f"RSI({R})",
+    line=dict(color="purple", width=1.5),
+    showlegend=False,
+), row=2, col=1)
+
+for level, label in [(RSI_HIGH, "Overbought"), (RSI_LOW, "Oversold")]:
+    fig2.add_hline(
+        y=level, row=2, col=1,
+        line=dict(color="gray", width=1, dash="dash"),
+        annotation_text=label,
+        annotation_position="right",
+        annotation_font=dict(size=10, color="gray"),
+    )
+
+fig2.update_layout(
+    xaxis2=dict(
+        type="date",
+        tickformat="%b %d",
+        rangeslider=dict(visible=False),
+    ),
+    yaxis=dict(tickprefix="$", automargin=True),
+    yaxis2=dict(title=f"RSI({R})", range=[0, 100], automargin=True),
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
+    height=480,
+    margin=dict(l=10, r=10, t=40, b=10),
+    dragmode="pan",
+)
+
+st.plotly_chart(fig2, use_container_width=True)
+st.caption(f"{recent_df['Date'].iloc[0].date()} → {recent_df['Date'].iloc[-1].date()}")
+
 # ── Summary stats ─────────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
 col1.metric("All-Time High",   f"${df['High'].max():.2f}")
