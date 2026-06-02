@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Update ticker High/Low CSVs with the latest data from Yahoo Finance.
+Update ticker OHLC CSVs with the latest data from Yahoo Finance.
 Reads each CSV, finds the last date, fetches new rows, appends, and commits to git.
 """
 
 import os
 import subprocess
-import sys
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -15,6 +14,7 @@ import yfinance as yf
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(REPO_DIR, "data")
 TICKERS = ["ASMB", "GSIT"]
+COLUMNS = ["Open", "High", "Low", "Close"]
 
 
 def git(args: list[str]) -> str:
@@ -53,7 +53,10 @@ def update_ticker(ticker: str) -> int:
         return 0
 
     df.columns = [col[0] for col in df.columns]
-    new_rows = df[["High", "Low"]].copy()
+
+    # Only keep columns that exist in both fetch and existing
+    cols = [c for c in COLUMNS if c in df.columns]
+    new_rows = df[cols].copy()
     new_rows.index.name = "Date"
 
     # Drop any overlap just in case
@@ -93,7 +96,7 @@ def main():
         git(["add", f"data/{ticker}_daily_high_low.csv"])
 
     today_str = datetime.today().strftime("%Y-%m-%d")
-    msg = f"Update High/Low data through {today_str} ({', '.join(updated_tickers)})"
+    msg = f"Update OHLC data through {today_str} ({', '.join(updated_tickers)})"
     git(["commit", "-m", msg])
     git(["push", "origin", "main"])
 
