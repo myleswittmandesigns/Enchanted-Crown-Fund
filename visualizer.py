@@ -14,7 +14,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .block-container { padding: 1rem 1rem 2rem 1rem !important; max-width: 100% !important; }
-    .stMultiSelect, .stDateInput, .stNumberInput { font-size: 1rem !important; }
+    .stDateInput, .stNumberInput { font-size: 1rem !important; }
     [data-testid="metric-container"] {
         background: #f8f9fa; border-radius: 10px;
         padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;
@@ -26,7 +26,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("👑 Enchanted Crown Fund")
-st.subheader("Mean Reversion Strategy Visualizer")
+st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -49,45 +49,21 @@ def compute_bollinger(close: pd.Series, n: int):
 
 def compute_signals(close: pd.Series, upper: pd.Series, lower: pd.Series):
     prev_close = close.shift(1)
-    buy  = (close < lower) & (prev_close >= lower.shift(1))   # crossed below lower band
-    sell = (close > upper) & (prev_close <= upper.shift(1))   # crossed above upper band
+    buy  = (close < lower) & (prev_close >= lower.shift(1))
+    sell = (close > upper) & (prev_close <= upper.shift(1))
     return buy, sell
 
 
-# ── Load tickers ──────────────────────────────────────────────────────────────
+# ── Load GSIT ─────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
-csv_files = sorted(DATA_DIR.glob("*_daily_high_low.csv"))
-tickers = [f.stem.replace("_daily_high_low", "") for f in csv_files]
+df_full = pd.read_csv(DATA_DIR / "GSIT_daily_high_low.csv", parse_dates=["Date"])
+df_full = df_full.sort_values("Date").reset_index(drop=True)
 
-if not tickers:
-    st.error("No ticker CSVs found in the data/ directory.")
-    st.stop()
-
-all_dates = []
-for t in tickers:
-    df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
-    all_dates += [df["Date"].min(), df["Date"].max()]
-global_min = min(all_dates).date()
-global_max = max(all_dates).date()
+global_min = df_full["Date"].min().date()
+global_max = df_full["Date"].max().date()
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 with st.expander("⚙️ Settings", expanded=False):
-
-    # Ticker selector
-    btn1, btn2, _ = st.columns([1, 1, 4])
-    if btn1.button("Select All"):
-        st.session_state["selected_tickers"] = tickers
-    if btn2.button("Deselect All"):
-        st.session_state["selected_tickers"] = []
-
-    selected = st.multiselect(
-        "Tickers",
-        options=tickers,
-        default=st.session_state.get("selected_tickers", tickers),
-        key="selected_tickers",
-    )
-
-    # Date range
     col_a, col_b = st.columns(2)
     with col_a:
         start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
@@ -96,7 +72,6 @@ with st.expander("⚙️ Settings", expanded=False):
 
     st.divider()
 
-    # Indicator settings
     st.markdown("**Lookback period (days)**")
     p1, p2, p3, p4 = st.columns(4)
     if p1.button("10"):
@@ -120,164 +95,132 @@ with st.expander("⚙️ Settings", expanded=False):
     with col_d:
         show_signals = st.toggle("Show buy/sell signals", value=True)
 
-if not selected:
-    st.info("Tap ⚙️ Settings above and select at least one ticker.")
+# ── Filter to date range ──────────────────────────────────────────────────────
+df = df_full[(df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)].reset_index(drop=True)
+
+if df.empty:
+    st.warning("No data in selected date range.")
     st.stop()
 
-PALETTE = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A"]
-COLORS  = {ticker: PALETTE[i % len(PALETTE)] for i, ticker in enumerate(tickers)}
+# ── Compute indicators (use full history for accuracy, slice after) ───────────
+sma, upper_bb, lower_bb = compute_bollinger(df_full["Close"], int(n_days))
+rsi = compute_rsi(df_full["Close"])
+buy_signals, sell_signals = compute_signals(df_full["Close"], upper_bb, lower_bb)
 
-# ── Per-ticker charts ─────────────────────────────────────────────────────────
-for ticker in selected:
-    df = pd.read_csv(DATA_DIR / f"{ticker}_daily_high_low.csv", parse_dates=["Date"])
-    df = df[(df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)]
-    df = df.sort_values("Date").reset_index(drop=True)
+# Align to filtered date range
+mask = (df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)
+sma         = sma[mask].reset_index(drop=True)
+upper_bb    = upper_bb[mask].reset_index(drop=True)
+lower_bb    = lower_bb[mask].reset_index(drop=True)
+rsi         = rsi[mask].reset_index(drop=True)
+buy_signals = buy_signals[mask].reset_index(drop=True)
+sell_signals= sell_signals[mask].reset_index(drop=True)
 
-    if df.empty:
-        st.warning(f"{ticker}: no data in selected range.")
-        continue
+# ── Chart ─────────────────────────────────────────────────────────────────────
+fig = make_subplots(
+    rows=2, cols=1,
+    shared_xaxes=True,
+    row_heights=[0.68, 0.32],
+    vertical_spacing=0.04,
+)
 
-    color = COLORS.get(ticker, "#636EFA")
+fig.add_trace(go.Candlestick(
+    x=df["Date"],
+    open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+    name="Price",
+    increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
+    decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
+    showlegend=False,
+), row=1, col=1)
 
-    # Compute indicators
-    sma, upper_bb, lower_bb = compute_bollinger(df["Close"], int(n_days))
-    rsi = compute_rsi(df["Close"])
-    buy_signals, sell_signals = compute_signals(df["Close"], upper_bb, lower_bb)
+fig.add_trace(go.Scatter(
+    x=df["Date"], y=sma,
+    mode="lines", name=f"SMA({n_days})",
+    line=dict(color="orange", width=1.5),
+), row=1, col=1)
 
-    # ── Subplot: 2 rows (candlestick + RSI) ──────────────────────────────────
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.68, 0.32],
-        vertical_spacing=0.04,
+fig.add_trace(go.Scatter(
+    x=df["Date"], y=upper_bb,
+    mode="lines", name="BB Upper",
+    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+), row=1, col=1)
+
+fig.add_trace(go.Scatter(
+    x=df["Date"], y=lower_bb,
+    mode="lines", name="BB Lower",
+    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+    fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
+), row=1, col=1)
+
+if show_signals:
+    fig.add_trace(go.Scatter(
+        x=df["Date"][buy_signals], y=df["Low"][buy_signals] * 0.98,
+        mode="markers", name="Buy",
+        marker=dict(symbol="triangle-up", size=10, color="lime", line=dict(color="green", width=1)),
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df["Date"][sell_signals], y=df["High"][sell_signals] * 1.02,
+        mode="markers", name="Sell",
+        marker=dict(symbol="triangle-down", size=10, color="red", line=dict(color="darkred", width=1)),
+    ), row=1, col=1)
+
+fig.add_trace(go.Scatter(
+    x=df["Date"], y=rsi,
+    mode="lines", name="RSI(14)",
+    line=dict(color="purple", width=1.5),
+    showlegend=False,
+), row=2, col=1)
+
+for level, label in [(70, "Overbought"), (30, "Oversold")]:
+    fig.add_hline(
+        y=level, row=2, col=1,
+        line=dict(color="gray", width=1, dash="dash"),
+        annotation_text=label,
+        annotation_position="right",
+        annotation_font=dict(size=10, color="gray"),
     )
 
-    # Candlesticks
-    fig.add_trace(go.Candlestick(
-        x=df["Date"],
-        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name="Price",
-        increasing=dict(line=dict(color=color), fillcolor=color),
-        decreasing=dict(line=dict(color=color), fillcolor="rgba(0,0,0,0)"),
-        showlegend=False,
-    ), row=1, col=1)
-
-    # SMA
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=sma,
-        mode="lines",
-        name=f"SMA({n_days})",
-        line=dict(color="orange", width=1.5, dash="solid"),
-    ), row=1, col=1)
-
-    # Bollinger Bands
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=upper_bb,
-        mode="lines",
-        name=f"BB Upper",
-        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-        showlegend=True,
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=lower_bb,
-        mode="lines",
-        name=f"BB Lower",
-        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-        fill="tonexty",
-        fillcolor="rgba(150,150,150,0.07)",
-        showlegend=True,
-    ), row=1, col=1)
-
-    # Buy/sell signals
-    if show_signals:
-        fig.add_trace(go.Scatter(
-            x=df["Date"][buy_signals],
-            y=df["Low"][buy_signals] * 0.98,
-            mode="markers",
-            name="Buy signal",
-            marker=dict(symbol="triangle-up", size=10, color="lime", line=dict(color="green", width=1)),
-        ), row=1, col=1)
-
-        fig.add_trace(go.Scatter(
-            x=df["Date"][sell_signals],
-            y=df["High"][sell_signals] * 1.02,
-            mode="markers",
-            name="Sell signal",
-            marker=dict(symbol="triangle-down", size=10, color="red", line=dict(color="darkred", width=1)),
-        ), row=1, col=1)
-
-    # RSI
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=rsi,
-        mode="lines",
-        name="RSI(14)",
-        line=dict(color="purple", width=1.5),
-        showlegend=False,
-    ), row=2, col=1)
-
-    # RSI overbought/oversold lines
-    for level, label in [(70, "Overbought"), (30, "Oversold")]:
-        fig.add_hline(
-            y=level, row=2, col=1,
-            line=dict(color="gray", width=1, dash="dash"),
-            annotation_text=label,
-            annotation_position="right",
-            annotation_font=dict(size=10, color="gray"),
-        )
-
-    fig.update_layout(
-        title=dict(text=f"{ticker} — Mean Reversion", font=dict(size=16)),
-        xaxis2=dict(
-            rangeslider=dict(visible=True, thickness=0.05),
-            type="date",
-            tickformat="%b %Y",
-            rangeselector=dict(
-                buttons=[
-                    dict(count=1,  label="1M", step="month", stepmode="backward"),
-                    dict(count=6,  label="6M", step="month", stepmode="backward"),
-                    dict(count=1,  label="1Y", step="year",  stepmode="backward"),
-                    dict(count=5,  label="5Y", step="year",  stepmode="backward"),
-                    dict(step="all", label="All"),
-                ],
-                bgcolor="#f0f0f0",
-                activecolor="#636EFA",
-                font=dict(size=10),
-                y=1.18,
-            ),
+fig.update_layout(
+    xaxis2=dict(
+        rangeslider=dict(visible=True, thickness=0.05),
+        type="date", tickformat="%b %Y",
+        rangeselector=dict(
+            buttons=[
+                dict(count=1,  label="1M", step="month", stepmode="backward"),
+                dict(count=6,  label="6M", step="month", stepmode="backward"),
+                dict(count=1,  label="1Y", step="year",  stepmode="backward"),
+                dict(count=5,  label="5Y", step="year",  stepmode="backward"),
+                dict(step="all", label="All"),
+            ],
+            bgcolor="#f0f0f0", activecolor="#636EFA", font=dict(size=10), y=1.18,
         ),
-        yaxis=dict(tickprefix="$", automargin=True, domain=[0.32, 1.0]),
-        yaxis2=dict(title="RSI", range=[0, 100], automargin=True),
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
-        height=580,
-        margin=dict(l=10, r=10, t=80, b=10),
-        dragmode="pan",
-    )
+    ),
+    yaxis=dict(tickprefix="$", automargin=True),
+    yaxis2=dict(title="RSI", range=[0, 100], automargin=True),
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
+    height=580,
+    margin=dict(l=10, r=10, t=60, b=10),
+    dragmode="pan",
+)
 
-    st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
 
-    # Summary stats
-    col1, col2 = st.columns(2)
-    col1.metric("All-Time High",   f"${df['High'].max():.2f}")
-    col2.metric("All-Time Low",    f"${df['Low'].min():.2f}")
-    col1.metric("Avg Daily Range", f"${(df['High'] - df['Low']).mean():.2f}")
-    latest = df.iloc[-1]
-    delta  = latest["Close"] - latest["Open"]
-    col2.metric("Latest Close",    f"${latest['Close']:.2f}", f"{delta:+.2f}")
+# ── Summary stats ─────────────────────────────────────────────────────────────
+col1, col2 = st.columns(2)
+col1.metric("All-Time High",   f"${df['High'].max():.2f}")
+col2.metric("All-Time Low",    f"${df['Low'].min():.2f}")
+col1.metric("Avg Daily Range", f"${(df['High'] - df['Low']).mean():.2f}")
+latest = df.iloc[-1]
+delta  = latest["Close"] - latest["Open"]
+col2.metric("Latest Close",    f"${latest['Close']:.2f}", f"{delta:+.2f}")
 
-    if show_signals:
-        n_buys  = buy_signals.sum()
-        n_sells = sell_signals.sum()
-        st.caption(f"Signals in range: {n_buys} buy ▲  ·  {n_sells} sell ▼")
+if show_signals:
+    st.caption(f"Signals in range: {buy_signals.sum()} buy ▲  ·  {sell_signals.sum()} sell ▼")
 
-    st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
-    st.divider()
+st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
-latest_dates = []
-for t in tickers:
-    df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
-    latest_dates.append(df["Date"].max())
-most_recent = max(latest_dates).strftime("%B %d, %Y")
+most_recent = df_full["Date"].max().strftime("%B %d, %Y")
 st.caption(f"Data source: Yahoo Finance · Most recent data: {most_recent} · Updates daily at 6pm ET on weekdays")
