@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -10,31 +11,48 @@ st.set_page_config(
     layout="centered",
 )
 
-# ── Mobile-friendly CSS ───────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container {
-        padding: 1rem 1rem 2rem 1rem !important;
-        max-width: 100% !important;
-    }
-    .stMultiSelect, .stDateInput { font-size: 1rem !important; }
+    .block-container { padding: 1rem 1rem 2rem 1rem !important; max-width: 100% !important; }
+    .stMultiSelect, .stDateInput, .stNumberInput { font-size: 1rem !important; }
     [data-testid="metric-container"] {
-        background: #f8f9fa;
-        border-radius: 10px;
-        padding: 0.6rem 0.8rem;
-        margin-bottom: 0.5rem;
+        background: #f8f9fa; border-radius: 10px;
+        padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;
     }
     h1 { font-size: 1.6rem !important; }
     h2 { font-size: 1.1rem !important; }
-    .streamlit-expanderHeader {
-        font-size: 1rem !important;
-        padding: 0.75rem !important;
-    }
+    .streamlit-expanderHeader { font-size: 1rem !important; padding: 0.75rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("👑 Enchanted Crown Fund")
-st.subheader("Candlestick Chart")
+st.subheader("Mean Reversion Strategy Visualizer")
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def compute_bollinger(close: pd.Series, n: int):
+    sma   = close.rolling(n).mean()
+    std   = close.rolling(n).std()
+    upper = sma + 2 * std
+    lower = sma - 2 * std
+    return sma, upper, lower
+
+
+def compute_signals(close: pd.Series, upper: pd.Series, lower: pd.Series):
+    prev_close = close.shift(1)
+    buy  = (close < lower) & (prev_close >= lower.shift(1))   # crossed below lower band
+    sell = (close > upper) & (prev_close <= upper.shift(1))   # crossed above upper band
+    return buy, sell
+
 
 # ── Load tickers ──────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
@@ -45,7 +63,6 @@ if not tickers:
     st.error("No ticker CSVs found in the data/ directory.")
     st.stop()
 
-# ── Date range across all tickers ────────────────────────────────────────────
 all_dates = []
 for t in tickers:
     df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
@@ -53,12 +70,14 @@ for t in tickers:
 global_min = min(all_dates).date()
 global_max = max(all_dates).date()
 
-# ── Controls ──────────────────────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────────────────────
 with st.expander("⚙️ Settings", expanded=False):
-    btn_col1, btn_col2, _ = st.columns([1, 1, 4])
-    if btn_col1.button("Select All"):
+
+    # Ticker selector
+    btn1, btn2, _ = st.columns([1, 1, 4])
+    if btn1.button("Select All"):
         st.session_state["selected_tickers"] = tickers
-    if btn_col2.button("Deselect All"):
+    if btn2.button("Deselect All"):
         st.session_state["selected_tickers"] = []
 
     selected = st.multiselect(
@@ -68,27 +87,34 @@ with st.expander("⚙️ Settings", expanded=False):
         key="selected_tickers",
     )
 
+    # Date range
     col_a, col_b = st.columns(2)
     with col_a:
         start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
     with col_b:
         end_date = st.date_input("To", value=global_max, min_value=global_min, max_value=global_max)
 
+    st.divider()
+
+    # Indicator settings
+    col_c, col_d = st.columns(2)
+    with col_c:
+        n_days = st.number_input("Lookback period (days)", min_value=5, max_value=500, value=20, step=1)
+    with col_d:
+        show_signals = st.toggle("Show buy/sell signals", value=True)
+
 if not selected:
     st.info("Tap ⚙️ Settings above and select at least one ticker.")
     st.stop()
 
-# ── Ticker colors ─────────────────────────────────────────────────────────────
 PALETTE = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A"]
-COLORS = {ticker: PALETTE[i % len(PALETTE)] for i, ticker in enumerate(tickers)}
+COLORS  = {ticker: PALETTE[i % len(PALETTE)] for i, ticker in enumerate(tickers)}
 
-# ── Build overlaid candlestick chart ─────────────────────────────────────────
-fig = go.Figure()
-
+# ── Per-ticker charts ─────────────────────────────────────────────────────────
 for ticker in selected:
     df = pd.read_csv(DATA_DIR / f"{ticker}_daily_high_low.csv", parse_dates=["Date"])
     df = df[(df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)]
-    df = df.sort_values("Date")
+    df = df.sort_values("Date").reset_index(drop=True)
 
     if df.empty:
         st.warning(f"{ticker}: no data in selected range.")
@@ -96,61 +122,139 @@ for ticker in selected:
 
     color = COLORS.get(ticker, "#636EFA")
 
+    # Compute indicators
+    sma, upper_bb, lower_bb = compute_bollinger(df["Close"], int(n_days))
+    rsi = compute_rsi(df["Close"])
+    buy_signals, sell_signals = compute_signals(df["Close"], upper_bb, lower_bb)
+
+    # ── Subplot: 2 rows (candlestick + RSI) ──────────────────────────────────
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.68, 0.32],
+        vertical_spacing=0.04,
+    )
+
+    # Candlesticks
     fig.add_trace(go.Candlestick(
         x=df["Date"],
-        open=df["Open"],
-        high=df["High"],
-        low=df["Low"],
-        close=df["Close"],
-        name=ticker,
+        open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        name="Price",
         increasing=dict(line=dict(color=color), fillcolor=color),
         decreasing=dict(line=dict(color=color), fillcolor="rgba(0,0,0,0)"),
-    ))
+        showlegend=False,
+    ), row=1, col=1)
 
-fig.update_layout(
-    xaxis=dict(
-        rangeslider=dict(visible=True, thickness=0.06),
-        type="date",
-        tickformat="%b %Y",
-        rangeselector=dict(
-            buttons=[
-                dict(count=1,  label="1M",  step="month", stepmode="backward"),
-                dict(count=6,  label="6M",  step="month", stepmode="backward"),
-                dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
-                dict(count=5,  label="5Y",  step="year",  stepmode="backward"),
-                dict(step="all", label="All"),
-            ],
-            bgcolor="#f0f0f0",
-            activecolor="#636EFA",
-            font=dict(size=11),
+    # SMA
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=sma,
+        mode="lines",
+        name=f"SMA({n_days})",
+        line=dict(color="orange", width=1.5, dash="solid"),
+    ), row=1, col=1)
+
+    # Bollinger Bands
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=upper_bb,
+        mode="lines",
+        name=f"BB Upper",
+        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+        showlegend=True,
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=lower_bb,
+        mode="lines",
+        name=f"BB Lower",
+        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+        fill="tonexty",
+        fillcolor="rgba(150,150,150,0.07)",
+        showlegend=True,
+    ), row=1, col=1)
+
+    # Buy/sell signals
+    if show_signals:
+        fig.add_trace(go.Scatter(
+            x=df["Date"][buy_signals],
+            y=df["Low"][buy_signals] * 0.98,
+            mode="markers",
+            name="Buy signal",
+            marker=dict(symbol="triangle-up", size=10, color="lime", line=dict(color="green", width=1)),
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=df["Date"][sell_signals],
+            y=df["High"][sell_signals] * 1.02,
+            mode="markers",
+            name="Sell signal",
+            marker=dict(symbol="triangle-down", size=10, color="red", line=dict(color="darkred", width=1)),
+        ), row=1, col=1)
+
+    # RSI
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=rsi,
+        mode="lines",
+        name="RSI(14)",
+        line=dict(color="purple", width=1.5),
+        showlegend=False,
+    ), row=2, col=1)
+
+    # RSI overbought/oversold lines
+    for level, label in [(70, "Overbought"), (30, "Oversold")]:
+        fig.add_hline(
+            y=level, row=2, col=1,
+            line=dict(color="gray", width=1, dash="dash"),
+            annotation_text=label,
+            annotation_position="right",
+            annotation_font=dict(size=10, color="gray"),
+        )
+
+    fig.update_layout(
+        title=dict(text=f"{ticker} — Mean Reversion", font=dict(size=16)),
+        xaxis2=dict(
+            rangeslider=dict(visible=True, thickness=0.05),
+            type="date",
+            tickformat="%b %Y",
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1,  label="1M", step="month", stepmode="backward"),
+                    dict(count=6,  label="6M", step="month", stepmode="backward"),
+                    dict(count=1,  label="1Y", step="year",  stepmode="backward"),
+                    dict(count=5,  label="5Y", step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ],
+                bgcolor="#f0f0f0",
+                activecolor="#636EFA",
+                font=dict(size=10),
+                y=1.18,
+            ),
         ),
-    ),
-    yaxis=dict(tickprefix="$", automargin=True, fixedrange=False),
-    hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    height=450,
-    margin=dict(l=10, r=10, t=40, b=10),
-    dragmode="pan",
-)
+        yaxis=dict(tickprefix="$", automargin=True, domain=[0.32, 1.0]),
+        yaxis2=dict(title="RSI", range=[0, 100], automargin=True),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
+        height=580,
+        margin=dict(l=10, r=10, t=80, b=10),
+        dragmode="pan",
+    )
 
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-# ── Per-ticker summary stats ──────────────────────────────────────────────────
-for ticker in selected:
-    df = pd.read_csv(DATA_DIR / f"{ticker}_daily_high_low.csv", parse_dates=["Date"])
-    df = df[(df["Date"].dt.date >= start_date) & (df["Date"].dt.date <= end_date)]
-    df = df.sort_values("Date")
-    if df.empty:
-        continue
-
-    st.markdown(f"**{ticker}**")
+    # Summary stats
     col1, col2 = st.columns(2)
     col1.metric("All-Time High",   f"${df['High'].max():.2f}")
     col2.metric("All-Time Low",    f"${df['Low'].min():.2f}")
     col1.metric("Avg Daily Range", f"${(df['High'] - df['Low']).mean():.2f}")
     latest = df.iloc[-1]
-    delta = latest["Close"] - latest["Open"]
-    col2.metric("Latest Close", f"${latest['Close']:.2f}", f"{delta:+.2f}")
+    delta  = latest["Close"] - latest["Open"]
+    col2.metric("Latest Close",    f"${latest['Close']:.2f}", f"{delta:+.2f}")
+
+    if show_signals:
+        n_buys  = buy_signals.sum()
+        n_sells = sell_signals.sum()
+        st.caption(f"Signals in range: {n_buys} buy ▲  ·  {n_sells} sell ▼")
+
+    st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
     st.divider()
 
 # ── Footer ────────────────────────────────────────────────────────────────────
@@ -159,5 +263,4 @@ for t in tickers:
     df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
     latest_dates.append(df["Date"].max())
 most_recent = max(latest_dates).strftime("%B %d, %Y")
-
 st.caption(f"Data source: Yahoo Finance · Most recent data: {most_recent} · Updates daily at 6pm ET on weekdays")
