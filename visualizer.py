@@ -274,6 +274,70 @@ for ticker in selected:
     st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
     st.divider()
 
+# ── 3D Surface Explorer ───────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("## 🧊 3D Surface Explorer — GSIT (Last Month)")
+st.caption("Axes: Date (X) · Lookback Period N (Y) · Value (Z) — rotate, zoom, hover to explore layer by layer")
+
+layer = st.radio(
+    "Select layer",
+    ["RSI", "SMA", "% vs SMA"],
+    horizontal=True,
+)
+
+file_map = {
+    "RSI":      ("GSIT_3D_RSI.csv",       "RSI Value",            "RdYlGn",  None),
+    "SMA":      ("GSIT_3D_SMA.csv",        "SMA Price ($)",        "Blues",   None),
+    "% vs SMA": ("GSIT_3D_PCT_vs_SMA.csv", "% Above/Below SMA",   "RdYlGn",  None),
+}
+
+fname, zlabel, colorscale, _ = file_map[layer]
+mat = pd.read_csv(DATA_DIR / fname, index_col="Date")
+
+# Axes
+x_dates  = mat.index.tolist()                          # 21 dates
+y_n      = [int(c.split("_")[1]) for c in mat.columns] # N values
+z_values = mat.values                                   # 21 × 46
+
+fig3d = go.Figure(data=[go.Surface(
+    x=x_dates,
+    y=y_n,
+    z=z_values,
+    colorscale=colorscale,
+    colorbar=dict(title=zlabel, thickness=15),
+    hovertemplate="Date: %{x}<br>N: %{y}<br>" + zlabel + ": %{z:.2f}<extra></extra>",
+)])
+
+fig3d.update_layout(
+    scene=dict(
+        xaxis=dict(title="Date", tickangle=45),
+        yaxis=dict(title="Lookback N (days)"),
+        zaxis=dict(title=zlabel),
+        camera=dict(eye=dict(x=1.6, y=-1.6, z=0.8)),
+    ),
+    height=550,
+    margin=dict(l=0, r=0, t=30, b=0),
+)
+
+st.plotly_chart(fig3d, use_container_width=True)
+
+# Flat table view — slice by date or N
+st.markdown("### 📋 Slice the data")
+slice_by = st.radio("Slice by", ["Date (fix a day, see all N)", "N (fix a lookback, see all days)"], horizontal=True)
+
+if slice_by.startswith("Date"):
+    chosen_date = st.selectbox("Select date", x_dates, index=len(x_dates)-1)
+    row = mat.loc[chosen_date].rename("Value").reset_index()
+    row.columns = ["Lookback N", zlabel]
+    row["Lookback N"] = y_n
+    st.dataframe(row.set_index("Lookback N").style.format("{:.2f}"), use_container_width=True)
+else:
+    chosen_n = st.selectbox("Select N", y_n, index=5)
+    col_name  = [c for c in mat.columns if c.endswith(f"_{chosen_n}")][0]
+    col_data  = mat[[col_name]].copy()
+    col_data.columns = [zlabel]
+    st.dataframe(col_data.style.format("{:.2f}"), use_container_width=True)
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 latest_dates = []
 for t in tickers:
