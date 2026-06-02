@@ -55,7 +55,19 @@ global_max = max(all_dates).date()
 
 # ── Controls ──────────────────────────────────────────────────────────────────
 with st.expander("⚙️ Settings", expanded=False):
-    selected = st.multiselect("Tickers", tickers, default=tickers)
+    btn_col1, btn_col2, _ = st.columns([1, 1, 4])
+    if btn_col1.button("Select All"):
+        st.session_state["selected_tickers"] = tickers
+    if btn_col2.button("Deselect All"):
+        st.session_state["selected_tickers"] = []
+
+    selected = st.multiselect(
+        "Tickers",
+        options=tickers,
+        default=st.session_state.get("selected_tickers", tickers),
+        key="selected_tickers",
+    )
+
     col_a, col_b = st.columns(2)
     with col_a:
         start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
