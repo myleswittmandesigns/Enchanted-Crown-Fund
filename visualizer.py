@@ -97,9 +97,26 @@ with st.expander("⚙️ Settings", expanded=False):
     st.divider()
 
     # Indicator settings
+    st.markdown("**Lookback period (days)**")
+    p1, p2, p3, p4 = st.columns(4)
+    if p1.button("10"):
+        st.session_state["n_days"] = 10
+    if p2.button("20"):
+        st.session_state["n_days"] = 20
+    if p3.button("50"):
+        st.session_state["n_days"] = 50
+    if p4.button("200"):
+        st.session_state["n_days"] = 200
+
     col_c, col_d = st.columns(2)
     with col_c:
-        n_days = st.number_input("Lookback period (days)", min_value=5, max_value=500, value=20, step=1)
+        n_days = st.number_input(
+            "Or type a value",
+            min_value=5, max_value=500,
+            value=st.session_state.get("n_days", 20),
+            step=1,
+            key="n_days",
+        )
     with col_d:
         show_signals = st.toggle("Show buy/sell signals", value=True)
 
