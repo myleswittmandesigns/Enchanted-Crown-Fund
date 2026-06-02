@@ -115,6 +115,19 @@ The following factors are **not yet incorporated** into signal logic:
 
 ---
 
+## Open Questions
+
+### RSI Thresholds — Revisit Later
+**Current values:** `RSI_low = 30`, `RSI_high = 70`
+
+These are Wilder's original empirical defaults (1978) and are the universal starting point — but they are **not mathematically derived**. They represent a rough historical observation that RSI rarely sustains above 70 or below 30 across broad market data.
+
+**The problem:** these thresholds were calibrated on large-cap, liquid, diversified assets. GSIT is a small-cap biotech with high volatility and binary event risk. Its RSI distribution may behave very differently — extremes may be more frequent, or the meaningful threshold may sit at 60/40 rather than 70/30.
+
+**Action item:** once enough historical signal data is available, analyze the actual RSI distribution for GSIT specifically and derive custom thresholds from that data rather than inheriting Wilder's defaults. The goal is thresholds that reflect *this asset's* behavior, not the average asset's behavior.
+
+---
+
 ## Derivation Notes — Why R = N
 
 ### The core insight
@@ -160,3 +173,4 @@ When R = N, both indicators draw from the same set of {U(t-i), D(t-i)} values. T
 |---------|------|--------|
 | 1.0 | 2026-06-02 | Initial rules — Bollinger Band crossover signals only |
 | 1.1 | 2026-06-02 | Changed RSI period from fixed R=14 to R=N. Added full variable definitions and derivation notes. |
+| 1.2 | 2026-06-02 | Added Open Questions section. Flagged RSI thresholds 70/30 for future GSIT-specific calibration. |
