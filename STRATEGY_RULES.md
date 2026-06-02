@@ -11,22 +11,13 @@ A mean reversion strategy assumes that price, after deviating significantly from
 |--------|------|-------------|
 | `t` | Time index | The current trading day |
 | `C(t)` | Closing price | The closing price of the asset on day t |
-| `Δ(t)` | Daily change | C(t) − C(t−1) — the raw price move each day |
-| `U(t)` | Daily gain | max(Δ(t), 0) — positive moves only |
-| `D(t)` | Daily loss | max(−Δ(t), 0) — negative moves only (always positive) |
-| `N` | Lookback period | Number of trading days for SMA, Bollinger Bands, and RSI |
+| `N` | Lookback period | Number of trading days for SMA and Bollinger Bands |
 | `K` | Std dev multiplier | How many standard deviations define the band edges |
-| `R` | RSI period | Number of days used to calculate RSI — set equal to N |
 | `μ(N)` | SMA | Simple moving average of closing prices over N days |
 | `d(i)` | Deviation | C(i) − μ(N) — how far day i's close sits from the mean |
 | `σ(N)` | Std deviation | Standard deviation of closing prices over N days |
 | `σ²(N)` | Variance | Mean of squared deviations over N days |
 | `Z(t)` | Z-score | How many standard deviations today's price is from the N-day mean |
-| `Ū(R)` | Average gain | Mean of all daily gains U(t) over R days |
-| `D̄(R)` | Average loss | Mean of all daily losses D(t) over R days |
-| `RS` | Relative Strength | Ratio of average gains to average losses over R days |
-| `RSI_low` | Oversold threshold | RSI below this value = oversold condition |
-| `RSI_high` | Overbought threshold | RSI above this value = overbought condition |
 
 ---
 
@@ -34,11 +25,8 @@ A mean reversion strategy assumes that price, after deviating significantly from
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| Lookback period | `N` | 20 | Number of trading days for all indicators |
-| Standard deviation multiplier | `K` | 2 | Band width in standard deviations |
-| RSI period | `R` | **= N** | Set equal to N — see derivation notes below |
-| RSI oversold threshold | `RSI_low` | 30 | RSI below this = oversold |
-| RSI overbought threshold | `RSI_high` | 70 | RSI above this = overbought |
+| Lookback period | `N` | **20** | Number of trading days for all indicators |
+| Standard deviation multiplier | `K` | **2** | Band width in standard deviations |
 
 ---
 
@@ -86,29 +74,6 @@ A signal fires when \|Z(t)\| > K. The bands self-adjust to volatility — wider 
 
 ---
 
-### Relative Strength Index (RSI)
-
-```
-Ū(R)  = (1/R) × Σ U(t-i)    for i = 0 to R-1
-D̄(R)  = (1/R) × Σ D(t-i)    for i = 0 to R-1
-RS    = Ū(R) / D̄(R)
-RSI   = 100 × Ū(R) / ( Ū(R) + D̄(R) )
-```
-
-| Symbol | Definition |
-|--------|------------|
-| `Ū(R)` | Average daily gain over R days |
-| `D̄(R)` | Average daily loss over R days (positive value) |
-| `U(t-i)` | Gain on day t-i = max(Δ(t-i), 0) |
-| `D(t-i)` | Loss on day t-i = max(−Δ(t-i), 0) |
-| `R` | RSI lookback period — set equal to N |
-| `RS` | Relative Strength — ratio of average gain to average loss |
-| `RSI` | Final value 0–100: fraction of total movement that was upward |
-
-RSI = 100 means every day was up. RSI = 0 means every day was down. RSI = 50 means gains and losses were equal.
-
----
-
 ## Signal Rules (Current)
 
 ### Buy Signal ▲
@@ -151,7 +116,6 @@ This fires only on the **first day** price crosses above the upper Bollinger Ban
 The following factors are **not yet incorporated** into signal logic:
 
 - Volume — is the move backed by conviction?
-- RSI confirmation — is momentum aligned with the signal?
 - Trend filter — is the broader trend up or down?
 - Gap opens — overnight jumps that aren't "real" intraday moves
 - Fundamental events — earnings, FDA announcements, news
@@ -161,79 +125,11 @@ The following factors are **not yet incorporated** into signal logic:
 ---
 
 ## Planned Enhancements
-- [ ] Require RSI < `RSI_low` to confirm a buy signal
-- [ ] Require RSI > `RSI_high` to confirm a sell signal
 - [ ] Add volume filter: only signal if volume > N-day average volume
 - [ ] Add trend filter: only buy if price is above 200-day SMA
 - [ ] Define stop-loss rule: exit if price falls X% below entry
 - [ ] Define take-profit rule: exit when price returns to SMA (middle band)
 - [ ] Backtest all rules against historical GSIT data
-
----
-
-## Open Questions
-
-### RSI Thresholds — Revisit Later
-**Current values:** `RSI_low = 30`, `RSI_high = 70`
-
-These are Wilder's original empirical defaults (1978) and are the universal starting point — but they are **not mathematically derived**. They represent a rough historical observation that RSI rarely sustains above 70 or below 30 across broad market data.
-
-**The problem:** these thresholds were calibrated on large-cap, liquid, diversified assets. GSIT is a small-cap biotech with high volatility and binary event risk. Its RSI distribution may behave very differently — extremes may be more frequent, or the meaningful threshold may sit at 60/40 rather than 70/30.
-
-**Action item:** once enough historical signal data is available, analyze the actual RSI distribution for GSIT specifically and derive custom thresholds from that data rather than inheriting Wilder's defaults. The goal is thresholds that reflect *this asset's* behavior, not the average asset's behavior.
-
----
-
-## Derivation Notes — Why R = N
-
-### The core insight
-Both RSI and Bollinger Bands are derived from the same underlying raw material: the sequence of daily gains U(t) and losses D(t) over a window of days. Since both indicators reduce to functions of the same data, they should operate over the same window to remain mathematically consistent.
-
-### RSI reduced to its essence
-```
-RSI = 100 × Ū(R) / ( Ū(R) + D̄(R) )
-    = 100 × (average gain) / (average absolute move)   over R days
-```
-
-| Symbol | Definition |
-|--------|------------|
-| `Ū(R)` | Average daily gain over R days |
-| `D̄(R)` | Average daily loss over R days |
-| `R` | Lookback window — set equal to N |
-
-RSI answers: of all the price movement that occurred over R days, what fraction was upward?
-
-### Bollinger Z-score reduced to its essence
-```
-C(t) − μ(N) = (1/N) × Σ ( C(t) − C(t-i) )   for i = 1 to N-1
-
-Each term C(t) − C(t-i) = Σ Δ(t-j)           (cumulative change from day t-i to today)
-                         = Σ ( U(t-j) − D(t-j) )
-```
-
-| Symbol | Definition |
-|--------|------------|
-| `C(t) − μ(N)` | Price displacement from the N-day mean |
-| `C(t) − C(t-i)` | Cumulative price change from day t-i to today |
-| `Δ(t-j)` | Daily change on day t-j |
-| `U(t-j), D(t-j)` | Gain and loss components of that daily change |
-
-So the Z-score is driven by the accumulated net gains and losses over the N-day window — the exact same U(t) and D(t) series that RSI uses.
-
-### The window mismatch problem
-When R ≠ N, the two indicators look at different slices of history:
-
-```
-Bollinger (N=50):  |-------------- 50 days --------------|
-RSI (R=14):                                  |--- 14 ---|
-```
-
-Price can be statistically extended on the 50-day view (Bollinger fires) while the last 14 days are a quiet consolidation (RSI reads neutral). The conflict is not a market signal — it is an artifact of mismatched windows.
-
-### The proof
-When R = N, both indicators draw from the same set of {U(t-i), D(t-i)} values. Their covariance is maximized and their signals are naturally aligned. A buy or sell signal confirmed by both indicators is describing the same underlying phenomenon — not two different time horizons accidentally agreeing.
-
-**Conclusion: R = N is the mathematically consistent choice. A fixed R introduces artificial decorrelation between indicators that are measuring the same thing.**
 
 ---
 
@@ -245,3 +141,4 @@ When R = N, both indicators draw from the same set of {U(t-i), D(t-i)} values. T
 | 1.1 | 2026-06-02 | Changed RSI period from fixed R=14 to R=N. Added full variable definitions and derivation notes. |
 | 1.2 | 2026-06-02 | Added Open Questions section. Flagged RSI thresholds 70/30 for future GSIT-specific calibration. |
 | 1.3 | 2026-06-02 | Added inline variable definition tables below every equation throughout the document. |
+| 1.4 | 2026-06-02 | Removed RSI entirely — variable definitions, inputs, indicator section, planned enhancements, open questions, and derivation notes. |

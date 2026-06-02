@@ -2,7 +2,6 @@ import re
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from pathlib import Path
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -35,36 +34,19 @@ def load_strategy_params() -> dict:
     text = rules_path.read_text()
 
     def extract(symbol: str, fallback):
-        # Match table rows like: | Lookback period | `N` | 20 |
         pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+)\*{{0,2}}\s*\|"
         match = re.search(pattern, text)
         return int(match.group(1)) if match else fallback
 
-    N       = extract("N",        20)
-    K       = extract("K",        2)
-    rsi_low = extract("RSI_low",  30)
-    rsi_high= extract("RSI_high", 70)
-    # R = N by definition in the rules
-    return {"N": N, "K": K, "R": N, "RSI_low": rsi_low, "RSI_high": rsi_high}
+    N = extract("N", 20)
+    K = extract("K", 2)
+    return {"N": N, "K": K}
 
 params = load_strategy_params()
-N        = params["N"]
-K        = params["K"]
-R        = params["R"]
-RSI_LOW  = params["RSI_low"]
-RSI_HIGH = params["RSI_high"]
+N = params["N"]
+K = params["K"]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def compute_rsi(close: pd.Series, period: int) -> pd.Series:
-    delta    = close.diff()
-    gain     = delta.clip(lower=0)
-    loss     = -delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs       = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
 def compute_bollinger(close: pd.Series, n: int, k: int):
     sma   = close.rolling(n).mean()
     std   = close.rolling(n).std()
@@ -90,12 +72,9 @@ global_max = df_full["Date"].max().date()
 # ── Active strategy parameters (read-only display) ───────────────────────────
 with st.expander("📋 Active Strategy Parameters", expanded=False):
     st.caption("Parameters are defined in `STRATEGY_RULES.md` and cannot be changed here.")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2 = st.columns(2)
     c1.metric("N (Lookback)", N)
     c2.metric("K (Std Dev ×)", K)
-    c3.metric("R (RSI Period)", f"= N ({R})")
-    c4.metric("RSI Oversold",  RSI_LOW)
-    c5.metric("RSI Overbought",RSI_HIGH)
 
 # ── Date range + signal toggle ────────────────────────────────────────────────
 with st.expander("⚙️ View Settings", expanded=False):
@@ -114,25 +93,18 @@ if df.empty:
     st.stop()
 
 # ── Compute indicators (full history for accuracy, slice after) ───────────────
-sma, upper_bb, lower_bb = compute_bollinger(df_full["Close"], N, K)
-rsi                      = compute_rsi(df_full["Close"], period=R)
-buy_signals, sell_signals= compute_signals(df_full["Close"], upper_bb, lower_bb)
+sma, upper_bb, lower_bb  = compute_bollinger(df_full["Close"], N, K)
+buy_signals, sell_signals = compute_signals(df_full["Close"], upper_bb, lower_bb)
 
 mask         = (df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)
 sma          = sma[mask].reset_index(drop=True)
 upper_bb     = upper_bb[mask].reset_index(drop=True)
 lower_bb     = lower_bb[mask].reset_index(drop=True)
-rsi          = rsi[mask].reset_index(drop=True)
 buy_signals  = buy_signals[mask].reset_index(drop=True)
 sell_signals = sell_signals[mask].reset_index(drop=True)
 
-# ── Chart ─────────────────────────────────────────────────────────────────────
-fig = make_subplots(
-    rows=2, cols=1,
-    shared_xaxes=True,
-    row_heights=[0.68, 0.32],
-    vertical_spacing=0.04,
-)
+# ── Main chart ────────────────────────────────────────────────────────────────
+fig = go.Figure()
 
 fig.add_trace(go.Candlestick(
     x=df["Date"],
@@ -141,58 +113,42 @@ fig.add_trace(go.Candlestick(
     increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
     decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
     showlegend=False,
-), row=1, col=1)
+))
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=sma,
     mode="lines", name=f"SMA({N})",
     line=dict(color="orange", width=1.5),
-), row=1, col=1)
+))
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=upper_bb,
     mode="lines", name=f"BB Upper (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-), row=1, col=1)
+))
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=lower_bb,
     mode="lines", name=f"BB Lower (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
     fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
-), row=1, col=1)
+))
 
 if show_signals:
     fig.add_trace(go.Scatter(
         x=df["Date"][buy_signals], y=df["Low"][buy_signals] * 0.98,
         mode="markers", name="Buy",
         marker=dict(symbol="triangle-up", size=10, color="lime", line=dict(color="green", width=1)),
-    ), row=1, col=1)
+    ))
 
     fig.add_trace(go.Scatter(
         x=df["Date"][sell_signals], y=df["High"][sell_signals] * 1.02,
         mode="markers", name="Sell",
         marker=dict(symbol="triangle-down", size=10, color="red", line=dict(color="darkred", width=1)),
-    ), row=1, col=1)
-
-fig.add_trace(go.Scatter(
-    x=df["Date"], y=rsi,
-    mode="lines", name=f"RSI({R})",
-    line=dict(color="purple", width=1.5),
-    showlegend=False,
-), row=2, col=1)
-
-for level, label in [(RSI_HIGH, "Overbought"), (RSI_LOW, "Oversold")]:
-    fig.add_hline(
-        y=level, row=2, col=1,
-        line=dict(color="gray", width=1, dash="dash"),
-        annotation_text=label,
-        annotation_position="right",
-        annotation_font=dict(size=10, color="gray"),
-    )
+    ))
 
 fig.update_layout(
-    xaxis2=dict(
+    xaxis=dict(
         rangeslider=dict(visible=True, thickness=0.05),
         type="date", tickformat="%b %Y",
         rangeselector=dict(
@@ -203,14 +159,13 @@ fig.update_layout(
                 dict(count=5,  label="5Y", step="year",  stepmode="backward"),
                 dict(step="all", label="All"),
             ],
-            bgcolor="#f0f0f0", activecolor="#636EFA", font=dict(size=10), y=1.18,
+            bgcolor="#f0f0f0", activecolor="#636EFA", font=dict(size=10), y=1.08,
         ),
     ),
     yaxis=dict(tickprefix="$", automargin=True),
-    yaxis2=dict(title=f"RSI({R})", range=[0, 100], automargin=True),
     hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
-    height=580,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
+    height=520,
     margin=dict(l=10, r=10, t=60, b=10),
     dragmode="pan",
 )
@@ -221,27 +176,18 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 st.markdown(f"### Last {N} Trading Days")
 
-# Slice to most recent N rows from full history (need extra rows behind for indicators)
 recent_df   = df_full.tail(N).reset_index(drop=True)
 
-# Recompute indicators on full history, take last N rows
 sma_r, upper_r, lower_r = compute_bollinger(df_full["Close"], N, K)
-rsi_r                    = compute_rsi(df_full["Close"], period=R)
 buy_r, sell_r            = compute_signals(df_full["Close"], upper_r, lower_r)
 
 recent_sma   = sma_r.tail(N).reset_index(drop=True)
 recent_upper = upper_r.tail(N).reset_index(drop=True)
 recent_lower = lower_r.tail(N).reset_index(drop=True)
-recent_rsi   = rsi_r.tail(N).reset_index(drop=True)
 recent_buy   = buy_r.tail(N).reset_index(drop=True)
 recent_sell  = sell_r.tail(N).reset_index(drop=True)
 
-fig2 = make_subplots(
-    rows=2, cols=1,
-    shared_xaxes=True,
-    row_heights=[0.68, 0.32],
-    vertical_spacing=0.04,
-)
+fig2 = go.Figure()
 
 fig2.add_trace(go.Candlestick(
     x=recent_df["Date"],
@@ -251,67 +197,50 @@ fig2.add_trace(go.Candlestick(
     increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
     decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
     showlegend=False,
-), row=1, col=1)
+))
 
 fig2.add_trace(go.Scatter(
     x=recent_df["Date"], y=recent_sma,
     mode="lines", name=f"SMA({N})",
     line=dict(color="orange", width=1.5),
-), row=1, col=1)
+))
 
 fig2.add_trace(go.Scatter(
     x=recent_df["Date"], y=recent_upper,
     mode="lines", name=f"BB Upper (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-), row=1, col=1)
+))
 
 fig2.add_trace(go.Scatter(
     x=recent_df["Date"], y=recent_lower,
     mode="lines", name=f"BB Lower (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
     fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
-), row=1, col=1)
+))
 
 if show_signals:
     fig2.add_trace(go.Scatter(
         x=recent_df["Date"][recent_buy], y=recent_df["Low"][recent_buy] * 0.98,
         mode="markers", name="Buy",
         marker=dict(symbol="triangle-up", size=12, color="lime", line=dict(color="green", width=1)),
-    ), row=1, col=1)
+    ))
 
     fig2.add_trace(go.Scatter(
         x=recent_df["Date"][recent_sell], y=recent_df["High"][recent_sell] * 1.02,
         mode="markers", name="Sell",
         marker=dict(symbol="triangle-down", size=12, color="red", line=dict(color="darkred", width=1)),
-    ), row=1, col=1)
-
-fig2.add_trace(go.Scatter(
-    x=recent_df["Date"], y=recent_rsi,
-    mode="lines", name=f"RSI({R})",
-    line=dict(color="purple", width=1.5),
-    showlegend=False,
-), row=2, col=1)
-
-for level, label in [(RSI_HIGH, "Overbought"), (RSI_LOW, "Oversold")]:
-    fig2.add_hline(
-        y=level, row=2, col=1,
-        line=dict(color="gray", width=1, dash="dash"),
-        annotation_text=label,
-        annotation_position="right",
-        annotation_font=dict(size=10, color="gray"),
-    )
+    ))
 
 fig2.update_layout(
-    xaxis2=dict(
+    xaxis=dict(
         type="date",
         tickformat="%b %d",
         rangeslider=dict(visible=False),
     ),
     yaxis=dict(tickprefix="$", automargin=True),
-    yaxis2=dict(title=f"RSI({R})", range=[0, 100], automargin=True),
     hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
-    height=480,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
+    height=420,
     margin=dict(l=10, r=10, t=40, b=10),
     dragmode="pan",
 )
