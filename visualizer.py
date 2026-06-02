@@ -5,10 +5,40 @@ from pathlib import Path
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Enchanted Crown Fund — Data Visualizer",
+    page_title="Enchanted Crown Fund",
     page_icon="👑",
-    layout="wide",
+    layout="centered",  # centered works better on mobile than wide
 )
+
+# ── Mobile-friendly CSS ───────────────────────────────────────────────────────
+st.markdown("""
+<style>
+    /* Tighter padding on small screens */
+    .block-container {
+        padding: 1rem 1rem 2rem 1rem !important;
+        max-width: 100% !important;
+    }
+    /* Larger tap targets for inputs */
+    .stMultiSelect, .stDateInput {
+        font-size: 1rem !important;
+    }
+    /* Metric cards: wrap nicely on small screens */
+    [data-testid="metric-container"] {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 0.6rem 0.8rem;
+        margin-bottom: 0.5rem;
+    }
+    /* Smaller title on mobile */
+    h1 { font-size: 1.6rem !important; }
+    h2 { font-size: 1.1rem !important; }
+    /* Make expander label bigger for easier tapping */
+    .streamlit-expanderHeader {
+        font-size: 1rem !important;
+        padding: 0.75rem !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 st.title("👑 Enchanted Crown Fund")
 st.subheader("Daily High / Low Visualizer")
@@ -22,26 +52,25 @@ if not tickers:
     st.error("No ticker CSVs found in the data/ directory.")
     st.stop()
 
-# ── Sidebar controls ──────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("Settings")
+# ── Load date range across all tickers ───────────────────────────────────────
+all_dates = []
+for t in tickers:
+    df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
+    all_dates += [df["Date"].min(), df["Date"].max()]
+global_min = min(all_dates).date()
+global_max = max(all_dates).date()
+
+# ── Controls in an expander (collapses on mobile to save space) ───────────────
+with st.expander("⚙️ Settings", expanded=False):
     selected = st.multiselect("Tickers", tickers, default=tickers)
-
-    st.divider()
-    st.markdown("**Date Range**")
-    all_dates = []
-    for t in tickers:
-        df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
-        all_dates += [df["Date"].min(), df["Date"].max()]
-
-    global_min = min(all_dates).date()
-    global_max = max(all_dates).date()
-
-    start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
-    end_date   = st.date_input("To",   value=global_max, min_value=global_min, max_value=global_max)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
+    with col_b:
+        end_date = st.date_input("To", value=global_max, min_value=global_min, max_value=global_max)
 
 if not selected:
-    st.info("Select at least one ticker from the sidebar.")
+    st.info("Tap ⚙️ Settings above and select at least one ticker.")
     st.stop()
 
 # ── Build charts ──────────────────────────────────────────────────────────────
@@ -53,6 +82,8 @@ for ticker in selected:
     if df.empty:
         st.warning(f"{ticker}: no data in selected range.")
         continue
+
+    st.markdown(f"### {ticker}")
 
     fig = go.Figure()
 
@@ -71,47 +102,47 @@ for ticker in selected:
     fig.add_trace(go.Scatter(
         x=df["Date"], y=df["High"],
         mode="lines",
-        line=dict(color="rgba(99, 110, 250, 0.8)", width=1),
+        line=dict(color="rgba(99, 110, 250, 0.9)", width=1.5),
         name="High",
-        hovertemplate="%{x|%Y-%m-%d}<br>High: $%{y:.2f}<extra></extra>",
+        hovertemplate="%{x|%b %d %Y}<br>High: $%{y:.2f}<extra></extra>",
     ))
 
     # Low line
     fig.add_trace(go.Scatter(
         x=df["Date"], y=df["Low"],
         mode="lines",
-        line=dict(color="rgba(239, 85, 59, 0.8)", width=1),
+        line=dict(color="rgba(239, 85, 59, 0.9)", width=1.5),
         name="Low",
-        hovertemplate="%{x|%Y-%m-%d}<br>Low: $%{y:.2f}<extra></extra>",
+        hovertemplate="%{x|%b %d %Y}<br>Low: $%{y:.2f}<extra></extra>",
     ))
 
     fig.update_layout(
-        title=dict(text=f"{ticker} — Daily High/Low Range", font=dict(size=18)),
         xaxis=dict(
-            title="Date",
-            rangeslider=dict(visible=True),
+            rangeslider=dict(visible=True, thickness=0.08),
             type="date",
+            tickformat="%b %Y",
         ),
-        yaxis=dict(title="Price (USD)", tickprefix="$"),
+        yaxis=dict(tickprefix="$", automargin=True),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=500,
-        margin=dict(l=40, r=40, t=60, b=40),
+        height=380,  # shorter height works better on mobile
+        margin=dict(l=10, r=10, t=30, b=10),
+        dragmode="pan",  # pan is easier than zoom on touch screens
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Summary stats
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("All-Time High",  f"${df['High'].max():.2f}")
-    col2.metric("All-Time Low",   f"${df['Low'].min():.2f}")
-    col3.metric("Avg Daily Range",f"${(df['High'] - df['Low']).mean():.2f}")
-    col4.metric("Latest Close*",  f"${df['Low'].iloc[-1]:.2f} – ${df['High'].iloc[-1]:.2f}")
+    # Summary stats — 2x2 grid instead of 4 columns (fits mobile)
+    col1, col2 = st.columns(2)
+    col1.metric("All-Time High",   f"${df['High'].max():.2f}")
+    col2.metric("All-Time Low",    f"${df['Low'].min():.2f}")
+    col1.metric("Avg Daily Range", f"${(df['High'] - df['Low']).mean():.2f}")
+    col2.metric("Latest Range",    f"${df['Low'].iloc[-1]:.2f} – ${df['High'].iloc[-1]:.2f}")
 
-    st.caption(f"Showing {len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
+    st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
     st.divider()
 
-# Find the most recent date across all tickers
+# ── Footer ────────────────────────────────────────────────────────────────────
 latest_dates = []
 for t in tickers:
     df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
