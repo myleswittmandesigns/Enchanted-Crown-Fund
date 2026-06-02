@@ -18,6 +18,8 @@ A mean reversion strategy assumes that price, after deviating significantly from
 | `σ(N)` | Std deviation | Standard deviation of closing prices over N days |
 | `σ²(N)` | Variance | Mean of squared deviations over N days |
 | `Z(t)` | Z-score | How many standard deviations today's price is from the N-day mean |
+| `StopPct` | Stop loss % | Maximum tolerated loss from entry before forced exit |
+| `P_entry` | Entry price | Closing price on the day the buy signal fired |
 
 ---
 
@@ -25,8 +27,10 @@ A mean reversion strategy assumes that price, after deviating significantly from
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| Lookback period | `N` | **20** | Number of trading days for all indicators |
-| Standard deviation multiplier | `K` | **2** | Band width in standard deviations |
+| Lookback period | `N` | **24** | Number of trading days for all indicators |
+| Standard deviation multiplier | `K` | **2.3** | Band width in standard deviations |
+| Stop loss threshold | `StopPct` | **46%** | Exit if close falls ≥ 46% below entry price |
+| Take profit rule | — | **Close ≥ SMA** | Exit when close returns to the N-day SMA (middle band) |
 
 ---
 
@@ -112,6 +116,32 @@ This fires only on the **first day** price crosses above the upper Bollinger Ban
 
 ---
 
+## Exit Rules (Active Positions)
+
+Once a buy signal fires and a position is entered at `P_entry`, the position is held until **one** of the following conditions is met — whichever comes first:
+
+### Take Profit ✅
+```
+C(t) ≥ μ(N)
+```
+Exit when today's close is at or above the N-day SMA (middle Bollinger Band). This is the canonical mean reversion exit — price has returned to its equilibrium.
+
+### Stop Loss 🛑
+```
+C(t) ≤ P_entry × (1 − StopPct)
+C(t) ≤ P_entry × 0.54        ← at StopPct = 46%
+```
+Exit when today's close has fallen 46% or more below the entry price. This caps the maximum loss on any single trade.
+
+| Symbol | Definition |
+|--------|------------|
+| `C(t)` | Today's closing price |
+| `μ(N)` | N-day SMA on today's window |
+| `P_entry` | Closing price on the day the buy signal fired |
+| `StopPct` | 0.46 — the maximum tolerated drawdown from entry |
+
+---
+
 ## What the Rules Currently Ignore
 The following factors are **not yet incorporated** into signal logic:
 
@@ -142,3 +172,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.2 | 2026-06-02 | Added Open Questions section. Flagged RSI thresholds 70/30 for future GSIT-specific calibration. |
 | 1.3 | 2026-06-02 | Added inline variable definition tables below every equation throughout the document. |
 | 1.4 | 2026-06-02 | Removed RSI entirely — variable definitions, inputs, indicator section, planned enhancements, open questions, and derivation notes. |
+| 1.5 | 2026-06-02 | Updated params to backtester optimum: N=24, K=2.3. Added StopPct=46% and Take Profit (Close ≥ SMA) to Inputs and Exit Rules section. |

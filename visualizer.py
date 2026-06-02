@@ -33,13 +33,17 @@ def load_strategy_params() -> dict:
     rules_path = Path(__file__).parent / "STRATEGY_RULES.md"
     text = rules_path.read_text()
 
-    def extract(symbol: str, fallback):
-        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+)\*{{0,2}}\s*\|"
+    def extract(symbol: str):
+        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)\*{{0,2}}\s*\|"
         match = re.search(pattern, text)
-        return int(match.group(1)) if match else fallback
+        if not match:
+            st.error(f"❌ Cannot find parameter `{symbol}` in STRATEGY_RULES.md. Please check the file.")
+            st.stop()
+        val = match.group(1)
+        return float(val) if "." in val else int(val)
 
-    N = extract("N", 20)
-    K = extract("K", 2)
+    N = extract("N")
+    K = extract("K")
     return {"N": N, "K": K}
 
 params = load_strategy_params()
