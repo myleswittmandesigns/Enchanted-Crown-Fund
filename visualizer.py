@@ -104,7 +104,7 @@ if df.empty:
 
 # ── Compute indicators (use full history for accuracy, slice after) ───────────
 sma, upper_bb, lower_bb = compute_bollinger(df_full["Close"], int(n_days))
-rsi = compute_rsi(df_full["Close"])
+rsi = compute_rsi(df_full["Close"], period=int(n_days))
 buy_signals, sell_signals = compute_signals(df_full["Close"], upper_bb, lower_bb)
 
 # Align to filtered date range
@@ -167,7 +167,7 @@ if show_signals:
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=rsi,
-    mode="lines", name="RSI(14)",
+    mode="lines", name=f"RSI({n_days})",
     line=dict(color="purple", width=1.5),
     showlegend=False,
 ), row=2, col=1)
