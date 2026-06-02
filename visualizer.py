@@ -111,4 +111,11 @@ for ticker in selected:
     st.caption(f"Showing {len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
     st.divider()
 
-st.caption("Data source: Yahoo Finance · Updates daily at 6pm ET on weekdays")
+# Find the most recent date across all tickers
+latest_dates = []
+for t in tickers:
+    df = pd.read_csv(DATA_DIR / f"{t}_daily_high_low.csv", parse_dates=["Date"])
+    latest_dates.append(df["Date"].max())
+most_recent = max(latest_dates).strftime("%B %d, %Y")
+
+st.caption(f"Data source: Yahoo Finance · Most recent data: {most_recent} · Updates daily at 6pm ET on weekdays")
