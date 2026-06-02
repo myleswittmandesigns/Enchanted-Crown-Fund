@@ -118,9 +118,6 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
         "Trades":         num_trades,
         "Stop Hits":      int(stop_hits),
         "Win %":          round(win_rate, 1),
-        "Avg Win $":      round(avg_win,  2),
-        "Avg Loss $":     round(avg_loss, 2),
-        "Avg Return %":   round(avg_ret_pct, 2),
         "Avg Hold Days":  round(avg_hold, 1),
         "Final Balance $":round(final_balance, 2),
         "Total Return $": round(total_return, 2),
@@ -144,17 +141,14 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
             f'<td>{row["Stop %"]:.0%}</td>'
             f'<td>{int(row["Trades"])}</td>'
             f'<td>{int(row["Stop Hits"])}</td>'
-            f'<td>{row["Win %"]:.1f}%</td>'
-            f'<td>${row["Avg Win $"]:.2f}</td>'
-            f'<td>${row["Avg Loss $"]:.2f}</td>'
-            f'<td>{row["Avg Return %"]:.2f}%</td>'
-            f'<td>{row["Avg Hold Days"]:.1f}</td>'
-            f'<td>${row["Final Balance $"]:,.2f}</td>'
-            f'<td>${row["Total Return $"]:,.2f}</td>'
-            f'<td>{row["Total Return %"]:.1f}%</td>'
-            f'<td>${row["Max Drawdown $"]:,.2f}</td>'
-            f'<td>{row["Max Drawdown %"]:.1f}%</td>'
-            f'<td data-order="{row["RDR"]}"><strong>{row["RDR"]:.2f}</strong></td>'
+            f'<td>{row["Win %"]:.0f}%</td>'
+            f'<td>{row["Avg Hold Days"]:.0f}</td>'
+            f'<td>${row["Final Balance $"]:,.0f}</td>'
+            f'<td>${row["Total Return $"]:,.0f}</td>'
+            f'<td>{row["Total Return %"]:.0f}%</td>'
+            f'<td>${row["Max Drawdown $"]:,.0f}</td>'
+            f'<td>{row["Max Drawdown %"]:.0f}%</td>'
+            f'<td><strong>{row["RDR"]:.2f}</strong></td>'
         )
         rows_html.append(f"<tr{tr_class}>{cells}</tr>")
 
@@ -167,7 +161,6 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
 <head>
 <meta charset="UTF-8">
 <title>GSIT Backtest — {run_date}</title>
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           max-width: 100%; margin: 2rem auto; padding: 0 1.5rem; color: #222; }}
@@ -178,33 +171,22 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   .card .label {{ font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }}
   .card .value {{ font-size: 1.3rem; font-weight: 600; }}
   .card .sub   {{ font-size: 0.75rem; color: #888; margin-top: 0.1rem; }}
-  table.dataTable thead th {{ background: #f0f0f0; cursor: pointer; position: relative; white-space: nowrap; }}
+  .table-wrap  {{ overflow-x: auto; width: 100%; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 0.88rem; }}
+  thead th {{ background: #f0f0f0; padding: 0.5rem 0.75rem; text-align: left;
+              border-bottom: 2px solid #ddd; vertical-align: bottom; }}
+  tbody td {{ padding: 0.4rem 0.75rem; border-bottom: 1px solid #eee; white-space: nowrap; }}
+  tbody tr:hover td {{ background: #fafafa; }}
   tr.good td   {{ background: #f0fff4; }}
   tr.good td strong {{ color: #1a7f3c; }}
   .legend {{ font-size: 0.8rem; color: #666; margin-top: 0.75rem; }}
-
-  /* Column header tooltips */
-  th[data-tip] .tip-icon {{ font-size: 0.7rem; color: #999; margin-left: 3px;
-                             vertical-align: super; cursor: default; }}
-  th[data-tip]:hover::after {{
-    content: attr(data-tip);
-    position: absolute;
-    top: 110%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #1a1a1a;
-    color: #fff;
-    font-size: 0.78rem;
-    font-weight: 400;
-    line-height: 1.5;
-    padding: 0.55rem 0.8rem;
-    border-radius: 6px;
-    white-space: pre-line;
-    width: 280px;
-    z-index: 9999;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    pointer-events: none;
-  }}
+  .tip-icon {{ font-size: 0.7rem; color: #999; margin-left: 3px;
+               vertical-align: super; cursor: default; }}
+  #tooltip {{ position: fixed; display: none; background: #1a1a1a; color: #fff;
+              font-size: 0.78rem; line-height: 1.6; padding: 0.55rem 0.8rem;
+              border-radius: 6px; width: 280px; z-index: 9999;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+              pointer-events: none; white-space: pre-line; }}
 </style>
 </head>
 <body>
@@ -243,7 +225,8 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   </div>
 </div>
 
-<table id="results" class="display nowrap" style="width:100%">
+<div class="table-wrap">
+<table>
 <thead>
   <tr>
     <th data-tip="Lookback period (trading days)\nWindow used for SMA and Bollinger Bands.\nμ(N) = (1/N) × Σ C(i)  for i = t−N+1 to t">N<span class="tip-icon">ⓘ</span></th>
@@ -252,9 +235,6 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     <th data-tip="Total completed trades\nCount of buy→exit pairs in the full history.\nOpen trades at end of history are excluded.">Trades<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Stop loss exits\nNumber of trades that hit the stop loss\nrather than closing at the SMA take-profit.">Stop Hits<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Win rate\nFraction of trades where Exit Price &gt; Entry Price.\nWin % = (winning trades ÷ total trades) × 100">Win %<span class="tip-icon">ⓘ</span></th>
-    <th data-tip="Average dollar profit on winning trades\nAvg Win $ = mean( new_balance − old_balance )\nfor all trades where exit &gt; entry\nBased on compounding balance at time of trade.">Avg Win $<span class="tip-icon">ⓘ</span></th>
-    <th data-tip="Average dollar loss on losing trades\nAvg Loss $ = mean( new_balance − old_balance )\nfor all trades where exit ≤ entry\nAlways a negative number.">Avg Loss $<span class="tip-icon">ⓘ</span></th>
-    <th data-tip="Average per-trade return as a percentage\nAvg Return % = mean( (Exit − Entry) ÷ Entry ) × 100\nPrice-based, so it doesn't reflect compounding.\nTells you the typical % move per trade.">Avg Return %<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Average holding period\nMean number of trading days between\nentry (buy signal) and exit (TP or SL).">Avg Hold Days<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Portfolio value after all trades close\nStarts at ${INITIAL_CAPITAL:,} and compounds:\nshares = balance ÷ entry price each trade\nnew balance = shares × exit price">Final Balance $<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Total dollar gain or loss over full history\nTotal Return $ = Final Balance − ${INITIAL_CAPITAL:,}\nPositive = profit, negative = loss.">Total Return $<span class="tip-icon">ⓘ</span></th>
@@ -268,20 +248,29 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
 {"".join(rows_html)}
 </tbody>
 </table>
+</div>
 
-<div class="legend">Green rows = RDR ≥ {RDR_THRESHOLD} &nbsp;·&nbsp; RDR = Total Return ÷ Max Drawdown &nbsp;·&nbsp; Click any column header to sort</div>
+<div class="legend">Green rows = RDR ≥ {RDR_THRESHOLD} &nbsp;·&nbsp; RDR = Total Return ÷ Max Drawdown &nbsp;·&nbsp; Sorted by Total Return %, then RDR</div>
 
-<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<div id="tooltip"></div>
 <script>
-  $(document).ready(function() {{
-    $('#results').DataTable({{
-      order: [[15, 'desc']],
-      pageLength: 100,
-      lengthMenu: [25, 50, 100, 200],
-      dom: 'lftip',
-      scrollX: true,
-      autoWidth: false,
+  const tip = document.getElementById('tooltip');
+  const PAD = 14;
+  document.querySelectorAll('th[data-tip]').forEach(th => {{
+    th.addEventListener('mouseenter', () => {{
+      tip.textContent = th.getAttribute('data-tip');
+      tip.style.display = 'block';
+    }});
+    th.addEventListener('mousemove', e => {{
+      const w = tip.offsetWidth, h = tip.offsetHeight;
+      let x = e.clientX + PAD, y = e.clientY + PAD;
+      if (x + w > window.innerWidth  - PAD) x = e.clientX - w - PAD;
+      if (y + h > window.innerHeight - PAD) y = e.clientY - h - PAD;
+      tip.style.left = x + 'px';
+      tip.style.top  = y + 'px';
+    }});
+    th.addEventListener('mouseleave', () => {{
+      tip.style.display = 'none';
     }});
   }});
 </script>
@@ -318,7 +307,7 @@ def main():
 
     out = (
         pd.DataFrame(results)
-        .sort_values(["RDR", "Total Return %"], ascending=[False, False])
+        .sort_values(["Total Return %", "RDR"], ascending=[False, False])
         .reset_index(drop=True)
     )
 
