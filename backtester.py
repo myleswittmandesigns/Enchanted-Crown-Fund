@@ -212,6 +212,11 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   tr.good td   {{ background: #f0fff4; }}
   tr.good td strong {{ color: #1a7f3c; }}
   .legend {{ font-size: 0.8rem; color: #666; margin-top: 0.75rem; }}
+  .config {{ background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 8px;
+             padding: 0.75rem 1.1rem; margin-bottom: 1.5rem; font-size: 0.82rem; color: #444; }}
+  .config strong {{ color: #222; }}
+  .config-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+                  gap: 0.3rem 2rem; margin-top: 0.4rem; }}
   .tip-icon {{ font-size: 0.7rem; color: #999; margin-left: 3px;
                vertical-align: super; cursor: default; }}
   #tooltip {{ position: fixed; display: none; background: #1a1a1a; color: #fff;
@@ -230,6 +235,23 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   Entry: first close below lower Bollinger Band &nbsp;·&nbsp;
   Exit: close ≥ SMA (take profit) or close ≤ entry × (1 − Stop%) (stop loss)
 </div>
+
+<details class="config">
+  <summary><strong>⚙️ Config</strong> &nbsp;—&nbsp; click to expand</summary>
+  <div class="config-grid" style="margin-top:0.6rem;">
+    <div><strong>INITIAL_CAPITAL</strong> &nbsp;${INITIAL_CAPITAL:,}</div>
+    <div><strong>RDR_THRESHOLD</strong> &nbsp;{RDR_THRESHOLD}</div>
+    <div><strong>MIN_TRADES</strong> &nbsp;{MIN_TRADES}</div>
+    <div><strong>SCORE_DIVISOR</strong> &nbsp;{SCORE_DIVISOR}</div>
+    <div><strong>N_VALUES</strong> &nbsp;{N_VALUES[0]}–{N_VALUES[-1]} (every {N_VALUES[1]-N_VALUES[0]})</div>
+    <div><strong>K_VALUES</strong> &nbsp;{K_VALUES[0]}–{K_VALUES[-1]} (every {round(K_VALUES[1]-K_VALUES[0],1) if len(K_VALUES) > 1 else "—"})</div>
+    <div><strong>STOP_PCT_VALUES</strong> &nbsp;{", ".join(f"{s:.0%}" for s in STOP_PCT_VALUES)}</div>
+    <div><strong>Entry</strong> &nbsp;Close crosses below lower BB</div>
+    <div><strong>Take profit</strong> &nbsp;Close ≥ SMA</div>
+    <div><strong>Stop loss</strong> &nbsp;Close ≤ entry × (1 − Stop%)</div>
+    <div><strong>Score formula</strong> &nbsp;Total Return % × RDR ÷ {SCORE_DIVISOR}</div>
+  </div>
+</details>
 
 <div class="summary">
   <div class="card">
