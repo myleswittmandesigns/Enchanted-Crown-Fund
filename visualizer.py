@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,7 +15,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .block-container { padding: 1rem 1rem 2rem 1rem !important; max-width: 100% !important; }
-    .stDateInput, .stNumberInput { font-size: 1rem !important; }
+    .stDateInput { font-size: 1rem !important; }
     [data-testid="metric-container"] {
         background: #f8f9fa; border-radius: 10px;
         padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;
@@ -28,72 +29,82 @@ st.markdown("""
 st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
+# ── Load parameters from STRATEGY_RULES.md ───────────────────────────────────
+def load_strategy_params() -> dict:
+    rules_path = Path(__file__).parent / "STRATEGY_RULES.md"
+    text = rules_path.read_text()
+
+    def extract(symbol: str, fallback):
+        # Match table rows like: | Lookback period | `N` | 20 |
+        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+)\*{{0,2}}\s*\|"
+        match = re.search(pattern, text)
+        return int(match.group(1)) if match else fallback
+
+    N       = extract("N",        20)
+    K       = extract("K",        2)
+    rsi_low = extract("RSI_low",  30)
+    rsi_high= extract("RSI_high", 70)
+    # R = N by definition in the rules
+    return {"N": N, "K": K, "R": N, "RSI_low": rsi_low, "RSI_high": rsi_high}
+
+params = load_strategy_params()
+N        = params["N"]
+K        = params["K"]
+R        = params["R"]
+RSI_LOW  = params["RSI_low"]
+RSI_HIGH = params["RSI_high"]
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+def compute_rsi(close: pd.Series, period: int) -> pd.Series:
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss
+    rs       = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-def compute_bollinger(close: pd.Series, n: int):
+def compute_bollinger(close: pd.Series, n: int, k: int):
     sma   = close.rolling(n).mean()
     std   = close.rolling(n).std()
-    upper = sma + 2 * std
-    lower = sma - 2 * std
+    upper = sma + k * std
+    lower = sma - k * std
     return sma, upper, lower
 
 
 def compute_signals(close: pd.Series, upper: pd.Series, lower: pd.Series):
-    prev_close = close.shift(1)
-    buy  = (close < lower) & (prev_close >= lower.shift(1))
-    sell = (close > upper) & (prev_close <= upper.shift(1))
+    buy  = (close < lower) & (close.shift(1) >= lower.shift(1))
+    sell = (close > upper) & (close.shift(1) <= upper.shift(1))
     return buy, sell
 
 
 # ── Load GSIT ─────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
-df_full = pd.read_csv(DATA_DIR / "GSIT_daily_high_low.csv", parse_dates=["Date"])
-df_full = df_full.sort_values("Date").reset_index(drop=True)
+df_full  = pd.read_csv(DATA_DIR / "GSIT_daily_high_low.csv", parse_dates=["Date"])
+df_full  = df_full.sort_values("Date").reset_index(drop=True)
 
 global_min = df_full["Date"].min().date()
 global_max = df_full["Date"].max().date()
 
-# ── Settings ──────────────────────────────────────────────────────────────────
-with st.expander("⚙️ Settings", expanded=False):
+# ── Active strategy parameters (read-only display) ───────────────────────────
+with st.expander("📋 Active Strategy Parameters", expanded=False):
+    st.caption("Parameters are defined in `STRATEGY_RULES.md` and cannot be changed here.")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("N (Lookback)", N)
+    c2.metric("K (Std Dev ×)", K)
+    c3.metric("R (RSI Period)", f"= N ({R})")
+    c4.metric("RSI Oversold",  RSI_LOW)
+    c5.metric("RSI Overbought",RSI_HIGH)
+
+# ── Date range + signal toggle ────────────────────────────────────────────────
+with st.expander("⚙️ View Settings", expanded=False):
     col_a, col_b = st.columns(2)
     with col_a:
         start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
     with col_b:
         end_date = st.date_input("To", value=global_max, min_value=global_min, max_value=global_max)
-
-    st.divider()
-
-    st.markdown("**Lookback period (days)**")
-    p1, p2, p3, p4 = st.columns(4)
-    if p1.button("10"):
-        st.session_state["n_days"] = 10
-    if p2.button("20"):
-        st.session_state["n_days"] = 20
-    if p3.button("50"):
-        st.session_state["n_days"] = 50
-    if p4.button("200"):
-        st.session_state["n_days"] = 200
-
-    col_c, col_d = st.columns(2)
-    with col_c:
-        n_days = st.number_input(
-            "Or type a value",
-            min_value=5, max_value=500,
-            value=st.session_state.get("n_days", 20),
-            step=1,
-            key="n_days",
-        )
-    with col_d:
-        show_signals = st.toggle("Show buy/sell signals", value=True)
+    show_signals = st.toggle("Show buy/sell signals", value=True)
 
 # ── Filter to date range ──────────────────────────────────────────────────────
 df = df_full[(df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)].reset_index(drop=True)
@@ -102,19 +113,18 @@ if df.empty:
     st.warning("No data in selected date range.")
     st.stop()
 
-# ── Compute indicators (use full history for accuracy, slice after) ───────────
-sma, upper_bb, lower_bb = compute_bollinger(df_full["Close"], int(n_days))
-rsi = compute_rsi(df_full["Close"], period=int(n_days))
-buy_signals, sell_signals = compute_signals(df_full["Close"], upper_bb, lower_bb)
+# ── Compute indicators (full history for accuracy, slice after) ───────────────
+sma, upper_bb, lower_bb = compute_bollinger(df_full["Close"], N, K)
+rsi                      = compute_rsi(df_full["Close"], period=R)
+buy_signals, sell_signals= compute_signals(df_full["Close"], upper_bb, lower_bb)
 
-# Align to filtered date range
-mask = (df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)
-sma         = sma[mask].reset_index(drop=True)
-upper_bb    = upper_bb[mask].reset_index(drop=True)
-lower_bb    = lower_bb[mask].reset_index(drop=True)
-rsi         = rsi[mask].reset_index(drop=True)
-buy_signals = buy_signals[mask].reset_index(drop=True)
-sell_signals= sell_signals[mask].reset_index(drop=True)
+mask         = (df_full["Date"].dt.date >= start_date) & (df_full["Date"].dt.date <= end_date)
+sma          = sma[mask].reset_index(drop=True)
+upper_bb     = upper_bb[mask].reset_index(drop=True)
+lower_bb     = lower_bb[mask].reset_index(drop=True)
+rsi          = rsi[mask].reset_index(drop=True)
+buy_signals  = buy_signals[mask].reset_index(drop=True)
+sell_signals = sell_signals[mask].reset_index(drop=True)
 
 # ── Chart ─────────────────────────────────────────────────────────────────────
 fig = make_subplots(
@@ -135,19 +145,19 @@ fig.add_trace(go.Candlestick(
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=sma,
-    mode="lines", name=f"SMA({n_days})",
+    mode="lines", name=f"SMA({N})",
     line=dict(color="orange", width=1.5),
 ), row=1, col=1)
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=upper_bb,
-    mode="lines", name="BB Upper",
+    mode="lines", name=f"BB Upper (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
 ), row=1, col=1)
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=lower_bb,
-    mode="lines", name="BB Lower",
+    mode="lines", name=f"BB Lower (×{K}σ)",
     line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
     fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
 ), row=1, col=1)
@@ -167,12 +177,12 @@ if show_signals:
 
 fig.add_trace(go.Scatter(
     x=df["Date"], y=rsi,
-    mode="lines", name=f"RSI({n_days})",
+    mode="lines", name=f"RSI({R})",
     line=dict(color="purple", width=1.5),
     showlegend=False,
 ), row=2, col=1)
 
-for level, label in [(70, "Overbought"), (30, "Oversold")]:
+for level, label in [(RSI_HIGH, "Overbought"), (RSI_LOW, "Oversold")]:
     fig.add_hline(
         y=level, row=2, col=1,
         line=dict(color="gray", width=1, dash="dash"),
@@ -197,7 +207,7 @@ fig.update_layout(
         ),
     ),
     yaxis=dict(tickprefix="$", automargin=True),
-    yaxis2=dict(title="RSI", range=[0, 100], automargin=True),
+    yaxis2=dict(title=f"RSI({R})", range=[0, 100], automargin=True),
     hovermode="x unified",
     legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1, font=dict(size=11)),
     height=580,
