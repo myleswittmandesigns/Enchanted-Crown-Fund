@@ -13,7 +13,7 @@ import yfinance as yf
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(REPO_DIR, "data")
-TICKERS = ["ASMB", "GSIT"]
+TICKERS = ["GSIT"]
 COLUMNS = ["Open", "High", "Low", "Close"]
 
 
