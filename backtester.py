@@ -236,9 +236,10 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   Exit: close ≥ SMA (take profit) or close ≤ entry × (1 − Stop%) (stop loss)
 </div>
 
-<details class="config">
-  <summary><strong>⚙️ Config</strong> &nbsp;—&nbsp; click to expand</summary>
-  <div class="config-grid" style="margin-top:0.6rem;">
+<div class="config">
+  <strong>⚙️ Active Configuration</strong>
+  <span style="font-size:0.78rem; color:#888; margin-left:0.75rem;">To edit these values, open the backtester config at the top of <code>backtester.py</code></span>
+  <div class="config-grid">
     <div><strong>INITIAL_CAPITAL</strong> &nbsp;${INITIAL_CAPITAL:,}</div>
     <div><strong>RDR_THRESHOLD</strong> &nbsp;{RDR_THRESHOLD}</div>
     <div><strong>MIN_TRADES</strong> &nbsp;{MIN_TRADES}</div>
@@ -251,7 +252,7 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     <div><strong>Stop loss</strong> &nbsp;Close ≤ entry × (1 − Stop%)</div>
     <div><strong>Score formula</strong> &nbsp;Total Return % × RDR ÷ {SCORE_DIVISOR}</div>
   </div>
-</details>
+</div>
 
 <div class="summary">
   <div class="card">
