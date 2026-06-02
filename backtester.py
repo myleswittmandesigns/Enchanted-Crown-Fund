@@ -20,14 +20,39 @@ REPO_DIR  = Path(__file__).parent
 DATA_PATH = REPO_DIR / "data" / "GSIT_daily_high_low.csv"
 OUT_DIR   = REPO_DIR / "reports"
 
-# ── Parameter grid ─────────────────────────────────────────────────────────────
-N_VALUES        = list(range(16, 28))                                   # [16, 17, ..., 27]
-K_VALUES        = [round(k * 0.1, 1) for k in range(15, 31)]           # [1.5, 1.6, ..., 3.0]
-STOP_PCT_VALUES = [0.46]
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║                        BACKTESTER CONFIGURATION                             ║
+# ║  All tunable variables live here. Do not edit below the dashed line.        ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
 
-RDR_THRESHOLD   = 5.0    # rows at or above this are highlighted
-MIN_TRADES      = 3      # skip combos with fewer completed trades
-INITIAL_CAPITAL = 5000   # starting dollars — full balance is reinvested each trade
+# ── Portfolio ──────────────────────────────────────────────────────────────────
+INITIAL_CAPITAL = 5_000     # Starting dollars. Full balance reinvested each trade.
+
+# ── Entry rule ─────────────────────────────────────────────────────────────────
+# Buy when: first day close crosses BELOW the lower Bollinger Band
+# (No variable to set — this rule is fixed by the strategy)
+
+# ── Exit rules ─────────────────────────────────────────────────────────────────
+# Take profit when: close >= SMA (middle Bollinger Band)
+# Stop loss when:   close <= entry × (1 − STOP_PCT)
+# (Take profit rule is fixed. Stop loss % is grid-searched below.)
+
+# ── Parameter grid (values to test) ───────────────────────────────────────────
+N_VALUES        = list(range(16, 28))                   # Lookback period: [16, 17, ..., 27]
+K_VALUES        = [round(k * 0.1, 1) for k in range(15, 31)]  # Band width: [1.5, 1.6, ..., 3.0]
+STOP_PCT_VALUES = [0.46]                                # Stop loss %: single value or list
+
+# ── Results filter ─────────────────────────────────────────────────────────────
+RDR_THRESHOLD   = 5.0       # Hide results with RDR below this value
+MIN_TRADES      = 3         # Hide results with fewer completed trades than this
+
+# ── Scoring ────────────────────────────────────────────────────────────────────
+# Score = Total Return % × RDR ÷ SCORE_DIVISOR
+# Rewards strategies that are both high-return and risk-disciplined.
+# Increase SCORE_DIVISOR to compress the score range; decrease to widen it.
+SCORE_DIVISOR   = 100
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 # ── Indicators ────────────────────────────────────────────────────────────────
@@ -125,7 +150,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
         "Max Drawdown $": round(max_dd, 2),
         "Max Drawdown %": round(max_dd_pct, 2),
         "RDR":            rdr,
-        "Score":          round(total_ret_pct * rdr / 100, 1),
+        "Score":          round(total_ret_pct * rdr / SCORE_DIVISOR, 1),
     }
 
 
