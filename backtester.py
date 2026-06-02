@@ -21,9 +21,9 @@ DATA_PATH = REPO_DIR / "data" / "GSIT_daily_high_low.csv"
 OUT_DIR   = REPO_DIR / "reports"
 
 # ── Parameter grid ─────────────────────────────────────────────────────────────
-N_VALUES        = [10, 14, 20, 30, 50]
-K_VALUES        = [1.5, 2.0, 2.5]
-STOP_PCT_VALUES = [0.05, 0.10, 0.15, 0.20]
+N_VALUES        = list(range(16, 28))                                   # [16, 17, ..., 27]
+K_VALUES        = [round(k * 0.1, 1) for k in range(15, 31)]           # [1.5, 1.6, ..., 3.0]
+STOP_PCT_VALUES = [0.46]
 
 RDR_THRESHOLD   = 5.0    # rows at or above this are highlighted
 MIN_TRADES      = 3      # skip combos with fewer completed trades
@@ -174,7 +174,11 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
   .table-wrap  {{ overflow-x: auto; width: 100%; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 0.88rem; }}
   thead th {{ background: #f0f0f0; padding: 0.5rem 0.75rem; text-align: left;
-              border-bottom: 2px solid #ddd; vertical-align: bottom; }}
+              border-bottom: 2px solid #ddd; vertical-align: bottom;
+              cursor: pointer; user-select: none; }}
+  thead th:hover {{ background: #e4e4e4; }}
+  thead th.sort-desc::after {{ content: " ▼"; font-size: 0.65rem; color: #555; }}
+  thead th.sort-asc::after  {{ content: " ▲"; font-size: 0.65rem; color: #555; }}
   tbody td {{ padding: 0.4rem 0.75rem; border-bottom: 1px solid #eee; white-space: nowrap; }}
   tbody tr:hover td {{ background: #fafafa; }}
   tr.good td   {{ background: #f0fff4; }}
@@ -254,6 +258,7 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
 
 <div id="tooltip"></div>
 <script>
+  // ── Tooltips ────────────────────────────────────────────────────────────────
   const tip = document.getElementById('tooltip');
   const PAD = 14;
   document.querySelectorAll('th[data-tip]').forEach(th => {{
@@ -271,6 +276,38 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     }});
     th.addEventListener('mouseleave', () => {{
       tip.style.display = 'none';
+    }});
+  }});
+
+  // ── Column sorting ──────────────────────────────────────────────────────────
+  function cellValue(td) {{
+    // Strip $, %, commas — return numeric value for sorting
+    return parseFloat(td.textContent.replace(/[$,%★]/g, '').replace(/,/g, '').trim()) || 0;
+  }}
+
+  const table   = document.querySelector('table');
+  const tbody   = table.querySelector('tbody');
+  const headers = table.querySelectorAll('thead th');
+  let lastCol = null, lastDir = null;
+
+  headers.forEach((th, col) => {{
+    th.addEventListener('click', () => {{
+      // Toggle direction: first click = desc, second click on same col = asc
+      const dir = (th === lastCol && lastDir === 'desc') ? 'asc' : 'desc';
+
+      // Clear sort indicators
+      headers.forEach(h => h.classList.remove('sort-desc', 'sort-asc'));
+      th.classList.add(dir === 'desc' ? 'sort-desc' : 'sort-asc');
+
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {{
+        const av = cellValue(a.querySelectorAll('td')[col]);
+        const bv = cellValue(b.querySelectorAll('td')[col]);
+        return dir === 'desc' ? bv - av : av - bv;
+      }});
+      rows.forEach(r => tbody.appendChild(r));
+
+      lastCol = th; lastDir = dir;
     }});
   }});
 </script>
@@ -307,6 +344,7 @@ def main():
 
     out = (
         pd.DataFrame(results)
+        .query("RDR >= @RDR_THRESHOLD")
         .sort_values(["Total Return %", "RDR"], ascending=[False, False])
         .reset_index(drop=True)
     )
