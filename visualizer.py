@@ -67,11 +67,8 @@ if not selected:
     st.stop()
 
 # ── Ticker colors ─────────────────────────────────────────────────────────────
-COLORS = {
-    tickers[i]: c for i, c in enumerate([
-        "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A"
-    ])
-}
+PALETTE = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A"]
+COLORS = {ticker: PALETTE[i % len(PALETTE)] for i, ticker in enumerate(tickers)}
 
 # ── Build overlaid candlestick chart ─────────────────────────────────────────
 fig = go.Figure()
