@@ -125,6 +125,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
         "Max Drawdown $": round(max_dd, 2),
         "Max Drawdown %": round(max_dd_pct, 2),
         "RDR":            rdr,
+        "Score":          round(total_ret_pct * rdr / 100, 1),
     }
 
 
@@ -149,12 +150,14 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
             f'<td>${row["Max Drawdown $"]:,.0f}</td>'
             f'<td>{row["Max Drawdown %"]:.0f}%</td>'
             f'<td><strong>{row["RDR"]:.2f}</strong></td>'
+            f'<td><strong>{row["Score"]:.1f}</strong></td>'
         )
         rows_html.append(f"<tr{tr_class}>{cells}</tr>")
 
     good_count  = sum(1 for _, r in df.iterrows() if isinstance(r["RDR"], float) and r["RDR"] >= RDR_THRESHOLD)
     best_rdr    = df.loc[df["RDR"].idxmax()]
     best_ret    = df.loc[df["Total Return $"].idxmax()]
+    best_score  = df.loc[df["Score"].idxmax()]
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -223,6 +226,11 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     <div class="sub">N={int(best_ret["N"])} K={best_ret["K"]:.1f} Stop={best_ret["Stop %"]:.0%}</div>
   </div>
   <div class="card">
+    <div class="label">Best Score</div>
+    <div class="value">{best_score["Score"]:.1f}</div>
+    <div class="sub">N={int(best_score["N"])} K={best_score["K"]:.1f} Stop={best_score["Stop %"]:.0%}</div>
+  </div>
+  <div class="card">
     <div class="label">Initial Capital</div>
     <div class="value">${INITIAL_CAPITAL:,}</div>
     <div class="sub">compounded across all trades · edit INITIAL_CAPITAL in backtester.py</div>
@@ -246,6 +254,7 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     <th data-tip="Maximum drawdown in dollars\nLargest peak-to-trough decline in portfolio value.\nMax DD $ = max( peak balance − balance at each point )">Max Drawdown $<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Maximum drawdown as % of peak portfolio value\nMax DD % = Max DD $ ÷ peak balance × 100\nTells you the worst % loss from a high point.">Max Drawdown %<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Return-to-Drawdown Ratio\nRDR = Total Return $ ÷ Max Drawdown $\nMeasures how much return you earned per dollar\nof peak-to-trough loss. Above 5 is good.">RDR<span class="tip-icon">ⓘ</span></th>
+    <th data-tip="Composite Score\nScore = Total Return % × RDR ÷ 100\nRewards strategies that are both high-return\nand risk-disciplined. Higher is better.">Score<span class="tip-icon">ⓘ</span></th>
   </tr>
 </thead>
 <tbody>
@@ -254,7 +263,7 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
 </table>
 </div>
 
-<div class="legend">Green rows = RDR ≥ {RDR_THRESHOLD} &nbsp;·&nbsp; RDR = Total Return ÷ Max Drawdown &nbsp;·&nbsp; Sorted by Total Return %, then RDR</div>
+<div class="legend">Score = Total Return % × RDR ÷ 100 &nbsp;·&nbsp; RDR = Total Return ÷ Max Drawdown &nbsp;·&nbsp; Sorted by Score descending</div>
 
 <div id="tooltip"></div>
 <script>
@@ -345,7 +354,7 @@ def main():
     out = (
         pd.DataFrame(results)
         .query("RDR >= @RDR_THRESHOLD")
-        .sort_values(["Total Return %", "RDR"], ascending=[False, False])
+        .sort_values("Score", ascending=False)
         .reset_index(drop=True)
     )
 
