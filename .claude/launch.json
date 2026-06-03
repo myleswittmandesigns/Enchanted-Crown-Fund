@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "visualizer",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "visualizer.py", "--server.port=8501"],
+      "port": 8501
+    },
+    {
+      "name": "backtester",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "backtester.py", "--server.port=8503"],
+      "port": 8503
+    }
+  ]
+}
