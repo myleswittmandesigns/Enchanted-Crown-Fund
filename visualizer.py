@@ -30,7 +30,7 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt = st.tabs(["📈 Visualizer", "⚙️ Backtester"])
+tab_viz, tab_bt, tab_rules = st.tabs(["📈 Visualizer", "⚙️ Backtester", "📋 Strategy Rules"])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VISUALIZER TAB
@@ -471,3 +471,34 @@ with tab_bt:
 
         html_content = latest.read_text(encoding="utf-8")
         components.html(html_content, height=2400, scrolling=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STRATEGY RULES TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_rules:
+    RULES_PATH = Path(__file__).parent / "STRATEGY_RULES.md"
+
+    if not RULES_PATH.exists():
+        st.error("❌ STRATEGY_RULES.md not found.")
+    else:
+        rules_text = RULES_PATH.read_text()
+
+        # ── Live parameter snapshot ───────────────────────────────────────────
+        def _extract(text: str, symbol: str):
+            pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+            m = re.search(pattern, text)
+            return m.group(1) if m else "—"
+
+        st.markdown("#### 🎯 Active Parameters")
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric("Lookback (N)",       _extract(rules_text, "N"))
+        p2.metric("Std Dev Mult (K)",   _extract(rules_text, "K"))
+        p3.metric("Stop Loss",          _extract(rules_text, "StopPct") + "%")
+        p4.metric("Min RDR",            _extract(rules_text, "RDR_THRESHOLD"))
+        p5.metric("Min CAGR",           _extract(rules_text, "CAGR_THRESHOLD") + "%")
+
+        st.divider()
+
+        # ── Render the full markdown ──────────────────────────────────────────
+        st.markdown(rules_text)
