@@ -142,6 +142,34 @@ Exit when today's close has fallen 46% or more below the entry price. This caps 
 
 ---
 
+## Parameter Validation Rule
+
+A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:
+
+### The 8-Neighbor Rule
+On the N × K score heat map, every one of the 8 cells surrounding the candidate (N±1, K±0.1 in all directions) must:
+
+1. **Pass the RDR threshold** — no gray cells in the neighborhood
+2. **Score adequately** — no neighbor more than 50% below the candidate's Score
+
+```
+Neighborhood of candidate (N₀, K₀):
+
+  (N₀−1, K₀−0.1)  (N₀−1, K₀)  (N₀−1, K₀+0.1)
+  (N₀,   K₀−0.1)  [CANDIDATE]  (N₀,   K₀+0.1)
+  (N₀+1, K₀−0.1)  (N₀+1, K₀)  (N₀+1, K₀+0.1)
+```
+
+If any neighbor is gray or falls below 50% of the candidate's Score, the candidate sits on a spike rather than a plateau — do not adopt those parameters.
+
+### Rationale
+A parameter set that is surrounded by strong neighbors demonstrates **robustness**: small errors in estimation or future drift in market conditions will not collapse performance. An isolated spike indicates the result was tuned to historical noise.
+
+### How to apply
+After each backtester run, open the heat map in the report and visually inspect the 8 cells surrounding the top-scored result before updating `STRATEGY_RULES.md`. Only update N and K if the neighborhood test passes.
+
+---
+
 ## What the Rules Currently Ignore
 The following factors are **not yet incorporated** into signal logic:
 
@@ -173,3 +201,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.3 | 2026-06-02 | Added inline variable definition tables below every equation throughout the document. |
 | 1.4 | 2026-06-02 | Removed RSI entirely — variable definitions, inputs, indicator section, planned enhancements, open questions, and derivation notes. |
 | 1.5 | 2026-06-02 | Updated params to backtester optimum: N=24, K=2.3. Added StopPct=46% and Take Profit (Close ≥ SMA) to Inputs and Exit Rules section. |
+| 1.6 | 2026-06-03 | Added Parameter Validation Rule — the 8-neighbor robustness test for backtester recommendations. |
