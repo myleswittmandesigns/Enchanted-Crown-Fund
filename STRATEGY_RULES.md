@@ -192,6 +192,7 @@ Walk-forward analysis validates strategy robustness by optimizing on a train win
 | `WF_TRAIN_YEARS` | **3** | Length of the optimization (training) window in years |
 | `WF_TEST_YEARS` | **1** | Length of the out-of-sample (test) window in years |
 | `WF_STEP_MONTHS` | **6** | How many months to slide the window forward each step |
+| `WF_MIN_TRADES` | **3** | Minimum completed trades required within a single walk-forward training window. Lower than MIN_TRADES because windows are shorter than the full history. |
 
 A strategy is considered robust if the best parameters found during training produce positive out-of-sample returns consistently across most windows.
 

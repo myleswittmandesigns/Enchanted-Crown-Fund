@@ -42,6 +42,7 @@ def load_strategy_params() -> dict:
         "WF_TRAIN_YEARS":  extract("WF_TRAIN_YEARS"),
         "WF_TEST_YEARS":   extract("WF_TEST_YEARS"),
         "WF_STEP_MONTHS":  extract("WF_STEP_MONTHS"),
+        "WF_MIN_TRADES":   extract("WF_MIN_TRADES"),
     }
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -148,7 +149,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
     max_dd     = (peak - bal_series).max()
     max_dd_pct = max_dd / peak.max() * 100
 
-    rdr = round(total_return / max_dd, 2) if max_dd > 0 else float("inf")
+    rdr = round(total_return / max_dd, 2) if max_dd > 0 else 999.0  # cap: no drawdown = excellent but not infinite
 
     return {
         "N":              n,
@@ -174,6 +175,7 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
     train_years  = int(params["WF_TRAIN_YEARS"])
     test_years   = int(params["WF_TEST_YEARS"])
     step_months  = int(params["WF_STEP_MONTHS"])
+    wf_min_trades = int(params["WF_MIN_TRADES"])
     dates        = df_raw["Date"]
     close        = df_raw["Close"]
     windows      = []
@@ -199,7 +201,7 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
         best_train  = None
         for n in n_values:
             for k in k_values:
-                r = run(close.iloc[:train_end_idx], n, k, stop_pct, 1)
+                r = run(close.iloc[:train_end_idx], n, k, stop_pct, wf_min_trades)
                 if r and r["Score"] > best_score:
                     best_score = r["Score"]
                     best_n, best_k = n, k
@@ -296,7 +298,7 @@ def build_heatmap(df_all: pd.DataFrame, df_filtered: pd.DataFrame, n_values: lis
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
-def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, cagr_threshold: float) -> str:
+def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, cagr_threshold: float, wf_min_trades: int = 1) -> str:
     if not windows:
         return "<p>No walk-forward windows generated.</p>"
 
@@ -337,7 +339,7 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
     return f"""
 <div class="wf-section">
   <h2>🔄 Walk-Forward Analysis</h2>
-  <p class="meta">Train: {train_yrs}yr &nbsp;·&nbsp; Test: {test_yrs}yr &nbsp;·&nbsp; Step: {step_mo}mo &nbsp;·&nbsp; {len(windows)} windows &nbsp;·&nbsp; Settings from STRATEGY_RULES.md</p>
+  <p class="meta">Train: {train_yrs}yr &nbsp;·&nbsp; Test: {test_yrs}yr &nbsp;·&nbsp; Step: {step_mo}mo &nbsp;·&nbsp; {len(windows)} windows &nbsp;·&nbsp; Min trades per window: {wf_min_trades} &nbsp;·&nbsp; Settings from STRATEGY_RULES.md</p>
   <div class="summary">
     <div class="card">
       <div class="label">Profitable Windows</div>
@@ -396,6 +398,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
     WF_TRAIN_YEARS  = int(params["WF_TRAIN_YEARS"])
     WF_TEST_YEARS   = int(params["WF_TEST_YEARS"])
     WF_STEP_MONTHS  = int(params["WF_STEP_MONTHS"])
+    WF_MIN_TRADES   = int(params["WF_MIN_TRADES"])
     rows_html = []
     for _, row in df.iterrows():
         good = isinstance(row["RDR"], float) and row["RDR"] >= RDR_THRESHOLD
@@ -553,7 +556,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   </div>
 </div>
 
-{build_wf_html(wf_windows, WF_TRAIN_YEARS, WF_TEST_YEARS, WF_STEP_MONTHS, CAGR_THRESHOLD)}
+{build_wf_html(wf_windows, WF_TRAIN_YEARS, WF_TEST_YEARS, WF_STEP_MONTHS, CAGR_THRESHOLD, WF_MIN_TRADES)}
 
 <div class="heatmap-section">
   <h2>📊 Score Heat Map — N × K</h2>

@@ -517,6 +517,7 @@ with tab_rules:
 | `WF_TRAIN_YEARS` | {_val("WF_TRAIN_YEARS")} | Training window (years) |
 | `WF_TEST_YEARS` | {_val("WF_TEST_YEARS")} | Out-of-sample test window (years) |
 | `WF_STEP_MONTHS` | {_val("WF_STEP_MONTHS")} | Slide step (months) |
+| `WF_MIN_TRADES` | {_val("WF_MIN_TRADES")} | Min trades required per training window |
 
 **Hardcoded in backtester only (not in Strategy Rules)**
 
