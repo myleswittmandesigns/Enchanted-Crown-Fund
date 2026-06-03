@@ -146,6 +146,15 @@ Exit when today's close has fallen 46% or more below the entry price. This caps 
 
 A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:
 
+### Minimum Trade Count Rule
+A parameter combination must produce at least **3 completed trades** across the full data history to be considered statistically meaningful. Fewer than 3 trades is not enough evidence to evaluate a strategy.
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `MIN_TRADES` | **3** | Minimum completed trades required. Edit in backtester config. |
+
+---
+
 ### Minimum CAGR Rule
 A parameter combination is only considered viable if its **CAGR exceeds the S&P 500 long-run average (~10% annually)**. There is no reason to run an active single-stock strategy that underperforms simply holding the index.
 
@@ -214,3 +223,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.5 | 2026-06-02 | Updated params to backtester optimum: N=24, K=2.3. Added StopPct=46% and Take Profit (Close ≥ SMA) to Inputs and Exit Rules section. |
 | 1.6 | 2026-06-03 | Added Parameter Validation Rule — the 8-neighbor robustness test for backtester recommendations. |
 | 1.7 | 2026-06-03 | Added Minimum CAGR Rule — filter out any param set with CAGR below S&P 500 average (~10%). |
+| 1.8 | 2026-06-03 | Added Minimum Trade Count Rule — filter out param sets with fewer than 3 completed trades. |
