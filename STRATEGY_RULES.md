@@ -196,13 +196,13 @@ A parameter combination must produce at least **3 completed trades** across the 
 ---
 
 ### Minimum CAGR Rule
-A parameter combination is only considered viable if its **CAGR exceeds the S&P 500 long-run average (~10% annually)**. There is no reason to run an active single-stock strategy that underperforms simply holding the index.
+A parameter combination is only considered viable if its **CAGR exceeds 20% annually** — roughly 2× the S&P 500 long-run average. Running a concentrated single-stock strategy carries significantly more risk than holding the index, so the return hurdle must be meaningfully higher to justify it.
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `CAGR_THRESHOLD` | **10%** | Minimum acceptable annualized return. Edit in backtester config. |
+| `CAGR_THRESHOLD` | **20%** | Minimum acceptable annualized return. Edit in backtester config. |
 
-Any combination below this threshold is automatically filtered from the results table. The 10% figure reflects the S&P 500's nominal historical average (dividends reinvested, pre-inflation). Adjust `CAGR_THRESHOLD` in `backtester.py` if benchmarking against a different index or time period.
+Any combination below this threshold is automatically filtered from the results table. Adjust `CAGR_THRESHOLD` in `backtester.py` if the benchmark changes.
 
 ---
 

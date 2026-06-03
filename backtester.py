@@ -45,7 +45,7 @@ STOP_PCT_VALUES = [0.46]                                # Stop loss %: single va
 # ── Results filter ─────────────────────────────────────────────────────────────
 RDR_THRESHOLD   = 5.0       # Hide results with RDR below this value
 MIN_TRADES      = 3         # Hide results with fewer completed trades than this
-CAGR_THRESHOLD  = 10.0      # Hide results with CAGR below this value (%). Default: ~S&P 500 long-run avg.
+CAGR_THRESHOLD  = 20.0      # Hide results with CAGR below this value (%). Must beat 2× S&P 500 long-run avg.
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 # Score = Total Return % × RDR ÷ SCORE_DIVISOR
