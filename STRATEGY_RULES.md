@@ -76,6 +76,9 @@ Z(t)            = ( C(t) − μ(N) ) / σ(N)
 
 A signal fires when \|Z(t)\| > K. The bands self-adjust to volatility — wider when price has been volatile, narrower when calm.
 
+**Standard deviation method: population (ddof=0), not sample (ddof=1).**
+The formula above divides by N, not N−1. This is a deliberate choice — we are describing the full N-day window as the complete population of interest, not a sample drawn from a larger distribution. Using population std produces slightly narrower bands than sample std, which means signals fire marginally more often. Any implementation must use `ddof=0` to match backtested results.
+
 ---
 
 ## Signal Rules (Current)
@@ -139,6 +142,43 @@ Exit when today's close has fallen 46% or more below the entry price. This caps 
 | `μ(N)` | N-day SMA on today's window |
 | `P_entry` | Closing price on the day the buy signal fired |
 | `StopPct` | 0.46 — the maximum tolerated drawdown from entry |
+
+---
+
+## Portfolio Model
+
+All backtesting and simulation uses a **compounding reinvestment model**:
+
+```
+shares(t)     = balance(t) / P_entry
+balance(t+1)  = shares(t) × P_exit
+```
+
+| Rule | Description |
+|------|-------------|
+| Starting capital | $5,000 (configurable via `INITIAL_CAPITAL` in backtester) |
+| Position sizing | Full balance allocated to every trade — no partial positions |
+| Reinvestment | All proceeds (gains and losses) are reinvested in the next trade |
+| Idle cash | Balance sits in cash between trades — no interest modeled |
+
+This means each trade compounds on the result of the last. A string of wins grows the position size; a loss shrinks it. There is no diversification — this is a single-asset, fully-invested model.
+
+---
+
+## Scoring
+
+The backtester ranks parameter combinations using a **composite Score** that rewards both high return and risk discipline:
+
+```
+Score = Total Return % × RDR ÷ SCORE_DIVISOR
+RDR   = Total Return $ ÷ Max Drawdown $
+```
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `SCORE_DIVISOR` | **100** | Scales the score range. Edit in backtester config. |
+
+A strategy that earns high returns but with a large drawdown scores lower than one that earns the same return more smoothly. RDR above 5 is considered good. `SCORE_DIVISOR` is purely cosmetic — it compresses the number range and does not affect ranking order.
 
 ---
 
@@ -224,3 +264,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.6 | 2026-06-03 | Added Parameter Validation Rule — the 8-neighbor robustness test for backtester recommendations. |
 | 1.7 | 2026-06-03 | Added Minimum CAGR Rule — filter out any param set with CAGR below S&P 500 average (~10%). |
 | 1.8 | 2026-06-03 | Added Minimum Trade Count Rule — filter out param sets with fewer than 3 completed trades. |
+| 1.9 | 2026-06-03 | Added Portfolio Model, Scoring, and population std (ddof=0) rule to Bollinger Bands section. |
