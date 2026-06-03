@@ -33,6 +33,17 @@
                   gap: 0.3rem 2rem; margin-top: 0.4rem; }
   .tip-icon { font-size: 0.7rem; color: #999; margin-left: 3px;
                vertical-align: super; cursor: default; }
+  .wf-section { margin-bottom: 2rem; }
+  .wf-section h2 { font-size: 1rem; margin-bottom: 0.25rem; }
+  tr.wf-pass td { background: #f0fff4; }
+  tr.wf-ok   td { background: #fffde7; }
+  tr.wf-fail td { background: #fdf2f2; color: #999; }
+  .wf-pass-swatch, .wf-ok-swatch, .wf-fail-swatch {
+    display: inline-block; width: 12px; height: 12px;
+    border-radius: 2px; vertical-align: middle; margin-right: 3px; }
+  .wf-pass-swatch { background: #f0fff4; border: 1px solid #b2dfdb; }
+  .wf-ok-swatch   { background: #fffde7; border: 1px solid #ffe082; }
+  .wf-fail-swatch { background: #fdf2f2; border: 1px solid #ffcdd2; }
   .heatmap-section { margin-bottom: 2rem; }
   .heatmap-section h2 { font-size: 1rem; margin-bottom: 0.25rem; }
   .heatmap-caption { font-size: 0.8rem; color: #666; margin-bottom: 0.6rem; }
@@ -113,6 +124,52 @@
     <div class="sub">compounded across all trades · edit INITIAL_CAPITAL in backtester.py</div>
   </div>
 </div>
+
+
+<div class="wf-section">
+  <h2>🔄 Walk-Forward Analysis</h2>
+  <p class="meta">Train: 3yr &nbsp;·&nbsp; Test: 1yr &nbsp;·&nbsp; Step: 6mo &nbsp;·&nbsp; 12 windows &nbsp;·&nbsp; Settings from STRATEGY_RULES.md</p>
+  <div class="summary">
+    <div class="card">
+      <div class="label">Profitable Windows</div>
+      <div class="value">6/12</div>
+    </div>
+    <div class="card">
+      <div class="label">Beat CAGR 20% Windows</div>
+      <div class="value">4/12</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Out-of-Sample Return</div>
+      <div class="value">+17.9%</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Out-of-Sample CAGR</div>
+      <div class="value">+18.1%</div>
+    </div>
+    <div class="card">
+      <div class="label">Most Stable Params</div>
+      <div class="value">N=27, K=1.6</div>
+      <div class="sub">appeared most across windows</div>
+    </div>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>#</th><th>Train Period</th><th>Test Period</th>
+      <th>Best N</th><th>Best K</th>
+      <th>Train Return</th><th>Train Score</th>
+      <th>Test Trades</th><th>Test Return</th><th>Test CAGR</th>
+    </tr></thead>
+    <tbody><tr class="wf-fail"><td>1</td><td>2016-06 → 2019-06</td><td>2019-06 → 2020-06</td><td>18</td><td>2.2</td><td>+116.0%</td><td>14.7</td><td>3</td><td>-11.9%</td><td>-11.9%</td></tr><tr class="wf-pass"><td>2</td><td>2016-12 → 2019-12</td><td>2019-12 → 2020-12</td><td>25</td><td>1.5</td><td>+192.7%</td><td>21.9</td><td>6</td><td>+28.9%</td><td>+29.0%</td></tr><tr class="wf-pass"><td>3</td><td>2017-06 → 2020-06</td><td>2020-06 → 2021-06</td><td>27</td><td>1.6</td><td>+135.3%</td><td>15.2</td><td>7</td><td>+73.7%</td><td>+74.8%</td></tr><tr class="wf-pass"><td>4</td><td>2017-12 → 2020-12</td><td>2020-12 → 2021-12</td><td>27</td><td>1.6</td><td>+220.1%</td><td>40.1</td><td>7</td><td>+40.2%</td><td>+40.8%</td></tr><tr class="wf-pass"><td>5</td><td>2018-06 → 2021-06</td><td>2021-06 → 2022-06</td><td>27</td><td>1.6</td><td>+308.7%</td><td>79.0</td><td>8</td><td>+29.3%</td><td>+29.7%</td></tr><tr class="wf-fail"><td>6</td><td>2018-12 → 2021-12</td><td>2021-12 → 2022-12</td><td>27</td><td>1.7</td><td>+320.2%</td><td>67.9</td><td>7</td><td>-7.6%</td><td>-7.7%</td></tr><tr class="wf-fail"><td>7</td><td>2019-06 → 2022-06</td><td>2022-06 → 2023-06</td><td>27</td><td>2.5</td><td>+246.7%</td><td>70.5</td><td>3</td><td>-7.9%</td><td>-7.9%</td></tr><tr class="wf-ok"><td>8</td><td>2019-12 → 2022-12</td><td>2022-12 → 2023-12</td><td>27</td><td>2.7</td><td>+210.6%</td><td>15.9</td><td>1</td><td>+6.8%</td><td>+6.9%</td></tr><tr class="wf-fail"><td>9</td><td>2020-06 → 2023-06</td><td>2023-06 → 2024-06</td><td>27</td><td>2.7</td><td>+231.8%</td><td>19.2</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>10</td><td>2020-12 → 2023-12</td><td>2023-12 → 2024-12</td><td>24</td><td>2.6</td><td>+362.6%</td><td>56.6</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>11</td><td>2021-06 → 2024-06</td><td>2024-06 → 2025-06</td><td>24</td><td>2.6</td><td>+362.6%</td><td>56.6</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-ok"><td>12</td><td>2021-12 → 2024-12</td><td>2024-12 → 2025-12</td><td>27</td><td>2.4</td><td>+531.7%</td><td>63.2</td><td>1</td><td>+9.4%</td><td>+9.5%</td></tr></tbody>
+  </table>
+  </div>
+  <div class="legend">
+    <span class="wf-pass-swatch"></span> Beats CAGR threshold &nbsp;·&nbsp;
+    <span class="wf-ok-swatch"></span> Positive return &nbsp;·&nbsp;
+    <span class="wf-fail-swatch"></span> Negative / no trades
+  </div>
+</div>
+
 
 <div class="heatmap-section">
   <h2>📊 Score Heat Map — N × K</h2>

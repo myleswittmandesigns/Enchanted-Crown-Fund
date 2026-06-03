@@ -182,6 +182,20 @@ A strategy that earns high returns but with a large drawdown scores lower than o
 
 ---
 
+## Walk-Forward Analysis Parameters
+
+Walk-forward analysis validates strategy robustness by optimizing on a train window and evaluating out-of-sample on a test window, rolling forward in steps across the full history.
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `WF_TRAIN_YEARS` | **3** | Length of the optimization (training) window in years |
+| `WF_TEST_YEARS` | **1** | Length of the out-of-sample (test) window in years |
+| `WF_STEP_MONTHS` | **6** | How many months to slide the window forward each step |
+
+A strategy is considered robust if the best parameters found during training produce positive out-of-sample returns consistently across most windows.
+
+---
+
 ## Parameter Validation Rule
 
 A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:

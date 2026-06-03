@@ -35,10 +35,13 @@ def load_strategy_params() -> dict:
         return float(val) if "." in val else int(val)
 
     return {
-        "StopPct":        extract("StopPct") / 100,
-        "RDR_THRESHOLD":  extract("RDR_THRESHOLD"),
-        "MIN_TRADES":     extract("MIN_TRADES"),
-        "CAGR_THRESHOLD": extract("CAGR_THRESHOLD"),
+        "StopPct":         extract("StopPct") / 100,
+        "RDR_THRESHOLD":   extract("RDR_THRESHOLD"),
+        "MIN_TRADES":      extract("MIN_TRADES"),
+        "CAGR_THRESHOLD":  extract("CAGR_THRESHOLD"),
+        "WF_TRAIN_YEARS":  extract("WF_TRAIN_YEARS"),
+        "WF_TEST_YEARS":   extract("WF_TEST_YEARS"),
+        "WF_STEP_MONTHS":  extract("WF_STEP_MONTHS"),
     }
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -72,7 +75,8 @@ def bollinger(close: pd.Series, n: int, k: float):
 
 
 # ── Single backtest run ───────────────────────────────────────────────────────
-def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int) -> dict | None:
+def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
+        entry_from_idx: int = 0) -> dict | None:
     sma, _, lower = bollinger(close, n, k)
     buy = (close < lower) & (close.shift(1) >= lower.shift(1))
 
@@ -81,7 +85,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int) ->
     entry_price = None
     entry_idx   = None
 
-    for i in range(n, len(close)):
+    for i in range(max(n, entry_from_idx), len(close)):
         if not in_trade:
             if buy.iloc[i]:
                 in_trade    = True
@@ -163,6 +167,76 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int) ->
     }
 
 
+# ── Walk-forward analysis ─────────────────────────────────────────────────────
+def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list) -> list:
+    stop_pct     = params["StopPct"]
+    train_years  = int(params["WF_TRAIN_YEARS"])
+    test_years   = int(params["WF_TEST_YEARS"])
+    step_months  = int(params["WF_STEP_MONTHS"])
+    dates        = df_raw["Date"]
+    close        = df_raw["Close"]
+    windows      = []
+    t            = dates.min()
+
+    while True:
+        train_end_date = t + pd.DateOffset(years=train_years)
+        test_end_date  = train_end_date + pd.DateOffset(years=test_years)
+        if test_end_date > dates.max():
+            break
+
+        # Convert dates to integer row positions
+        te_mask = dates >= train_end_date
+        xt_mask = dates >= test_end_date
+        if not te_mask.any() or not xt_mask.any():
+            break
+        train_end_idx = int(df_raw[te_mask].index[0])
+        test_end_idx  = int(df_raw[xt_mask].index[0])
+
+        # Optimize: find best (N, K) on train period
+        best_score  = -1
+        best_n, best_k = n_values[0], k_values[0]
+        best_train  = None
+        for n in n_values:
+            for k in k_values:
+                r = run(close.iloc[:train_end_idx], n, k, stop_pct, 1)
+                if r and r["Score"] > best_score:
+                    best_score = r["Score"]
+                    best_n, best_k = n, k
+                    best_train = r
+
+        # Evaluate best params on test period (use full history for Bollinger warmup)
+        test_r = run(close.iloc[:test_end_idx], best_n, best_k, stop_pct, 1,
+                     entry_from_idx=train_end_idx)
+
+        # Annualize test return over the actual test window length
+        test_span_yrs = (dates.iloc[test_end_idx - 1] - dates.iloc[train_end_idx]).days / 365.25
+        if test_r and test_span_yrs > 0:
+            test_cagr = round(
+                ((test_r["Final Balance $"] / INITIAL_CAPITAL) ** (1 / test_span_yrs) - 1) * 100, 1
+            )
+        else:
+            test_cagr = None
+
+        windows.append({
+            "Window":         len(windows) + 1,
+            "Train Start":    t.strftime("%Y-%m"),
+            "Train End":      train_end_date.strftime("%Y-%m"),
+            "Test Start":     train_end_date.strftime("%Y-%m"),
+            "Test End":       test_end_date.strftime("%Y-%m"),
+            "Best N":         best_n,
+            "Best K":         round(best_k, 1),
+            "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
+            "Train Score":    round(best_train["Score"], 1)          if best_train else None,
+            "Test Trades":    test_r["Trades"]                        if test_r    else 0,
+            "Test Return %":  round(test_r["Total Return %"], 1)      if test_r    else None,
+            "Test CAGR %":    test_cagr,
+        })
+
+        t = t + pd.DateOffset(months=step_months)
+
+    return windows
+
+
 # ── Heat map ──────────────────────────────────────────────────────────────────
 def build_heatmap(df_all: pd.DataFrame, df_filtered: pd.DataFrame, n_values: list, k_values: list) -> str:
     # All scores for lookup
@@ -221,11 +295,100 @@ def build_heatmap(df_all: pd.DataFrame, df_filtered: pd.DataFrame, n_values: lis
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
-def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_through: str, params: dict) -> str:
-    RDR_THRESHOLD  = params["RDR_THRESHOLD"]
-    MIN_TRADES     = params["MIN_TRADES"]
-    CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
+def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, cagr_threshold: float) -> str:
+    if not windows:
+        return "<p>No walk-forward windows generated.</p>"
+
+    profitable   = [w for w in windows if w["Test Return %"] is not None and w["Test Return %"] > 0]
+    cagr_passing = [w for w in windows if w["Test CAGR %"] is not None and w["Test CAGR %"] >= cagr_threshold]
+    test_returns = [w["Test Return %"] for w in windows if w["Test Return %"] is not None]
+    test_cagrs   = [w["Test CAGR %"]   for w in windows if w["Test CAGR %"]   is not None]
+    avg_ret  = round(sum(test_returns) / len(test_returns), 1) if test_returns else None
+    avg_cagr = round(sum(test_cagrs)   / len(test_cagrs),   1) if test_cagrs   else None
+
+    from collections import Counter
+    param_counts = Counter((w["Best N"], w["Best K"]) for w in windows)
+    most_common_n, most_common_k = param_counts.most_common(1)[0][0]
+
+    rows = []
+    for w in windows:
+        has_test  = w["Test Return %"] is not None
+        positive  = has_test and w["Test Return %"] > 0
+        beats_cagr = has_test and w["Test CAGR %"] is not None and w["Test CAGR %"] >= cagr_threshold
+        row_cls   = ' class="wf-pass"' if beats_cagr else (' class="wf-ok"' if positive else ' class="wf-fail"')
+        test_ret_str  = f'{w["Test Return %"]:+.1f}%' if has_test else '—'
+        test_cagr_str = f'{w["Test CAGR %"]:+.1f}%'  if w["Test CAGR %"] is not None else '—'
+        rows.append(
+            f'<tr{row_cls}>'
+            f'<td>{w["Window"]}</td>'
+            f'<td>{w["Train Start"]} → {w["Train End"]}</td>'
+            f'<td>{w["Test Start"]} → {w["Test End"]}</td>'
+            f'<td>{w["Best N"]}</td>'
+            f'<td>{w["Best K"]:.1f}</td>'
+            f'<td>{w["Train Return %"]:+.1f}%</td>'
+            f'<td>{w["Train Score"]:.1f}</td>'
+            f'<td>{w["Test Trades"]}</td>'
+            f'<td>{test_ret_str}</td>'
+            f'<td>{test_cagr_str}</td>'
+            f'</tr>'
+        )
+
+    return f"""
+<div class="wf-section">
+  <h2>🔄 Walk-Forward Analysis</h2>
+  <p class="meta">Train: {train_yrs}yr &nbsp;·&nbsp; Test: {test_yrs}yr &nbsp;·&nbsp; Step: {step_mo}mo &nbsp;·&nbsp; {len(windows)} windows &nbsp;·&nbsp; Settings from STRATEGY_RULES.md</p>
+  <div class="summary">
+    <div class="card">
+      <div class="label">Profitable Windows</div>
+      <div class="value">{len(profitable)}/{len(windows)}</div>
+    </div>
+    <div class="card">
+      <div class="label">Beat CAGR {cagr_threshold:.0f}% Windows</div>
+      <div class="value">{len(cagr_passing)}/{len(windows)}</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Out-of-Sample Return</div>
+      <div class="value">{avg_ret:+.1f}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Out-of-Sample CAGR</div>
+      <div class="value">{avg_cagr:+.1f}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Most Stable Params</div>
+      <div class="value">N={most_common_n}, K={most_common_k:.1f}</div>
+      <div class="sub">appeared most across windows</div>
+    </div>
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th>#</th><th>Train Period</th><th>Test Period</th>
+      <th>Best N</th><th>Best K</th>
+      <th>Train Return</th><th>Train Score</th>
+      <th>Test Trades</th><th>Test Return</th><th>Test CAGR</th>
+    </tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table>
+  </div>
+  <div class="legend">
+    <span class="wf-pass-swatch"></span> Beats CAGR threshold &nbsp;·&nbsp;
+    <span class="wf-ok-swatch"></span> Positive return &nbsp;·&nbsp;
+    <span class="wf-fail-swatch"></span> Negative / no trades
+  </div>
+</div>
+"""
+
+
+def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
+               run_date: str, data_through: str, params: dict) -> str:
+    RDR_THRESHOLD   = params["RDR_THRESHOLD"]
+    MIN_TRADES      = params["MIN_TRADES"]
+    CAGR_THRESHOLD  = params["CAGR_THRESHOLD"]
     STOP_PCT_VALUES = [params["StopPct"]]
+    WF_TRAIN_YEARS  = int(params["WF_TRAIN_YEARS"])
+    WF_TEST_YEARS   = int(params["WF_TEST_YEARS"])
+    WF_STEP_MONTHS  = int(params["WF_STEP_MONTHS"])
     rows_html = []
     for _, row in df.iterrows():
         good = isinstance(row["RDR"], float) and row["RDR"] >= RDR_THRESHOLD
@@ -290,6 +453,17 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
                   gap: 0.3rem 2rem; margin-top: 0.4rem; }}
   .tip-icon {{ font-size: 0.7rem; color: #999; margin-left: 3px;
                vertical-align: super; cursor: default; }}
+  .wf-section {{ margin-bottom: 2rem; }}
+  .wf-section h2 {{ font-size: 1rem; margin-bottom: 0.25rem; }}
+  tr.wf-pass td {{ background: #f0fff4; }}
+  tr.wf-ok   td {{ background: #fffde7; }}
+  tr.wf-fail td {{ background: #fdf2f2; color: #999; }}
+  .wf-pass-swatch, .wf-ok-swatch, .wf-fail-swatch {{
+    display: inline-block; width: 12px; height: 12px;
+    border-radius: 2px; vertical-align: middle; margin-right: 3px; }}
+  .wf-pass-swatch {{ background: #f0fff4; border: 1px solid #b2dfdb; }}
+  .wf-ok-swatch   {{ background: #fffde7; border: 1px solid #ffe082; }}
+  .wf-fail-swatch {{ background: #fdf2f2; border: 1px solid #ffcdd2; }}
   .heatmap-section {{ margin-bottom: 2rem; }}
   .heatmap-section h2 {{ font-size: 1rem; margin-bottom: 0.25rem; }}
   .heatmap-caption {{ font-size: 0.8rem; color: #666; margin-bottom: 0.6rem; }}
@@ -370,6 +544,8 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
     <div class="sub">compounded across all trades · edit INITIAL_CAPITAL in backtester.py</div>
   </div>
 </div>
+
+{build_wf_html(wf_windows, WF_TRAIN_YEARS, WF_TEST_YEARS, WF_STEP_MONTHS, CAGR_THRESHOLD)}
 
 <div class="heatmap-section">
   <h2>📊 Score Heat Map — N × K</h2>
@@ -522,9 +698,13 @@ def main():
         .reset_index(drop=True)
     )
 
+    print("  Running walk-forward analysis...")
+    wf_windows = walk_forward(df_raw, params, N_VALUES, K_VALUES)
+    print(f"  Walk-forward: {len(wf_windows)} windows completed")
+
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_{run_date}.html"
-    out_path.write_text(build_html(out, df_all, run_date, data_through, params), encoding="utf-8")
+    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params), encoding="utf-8")
 
     good_count = (out["RDR"] >= RDR_THRESHOLD).sum()
     best       = out.iloc[0]
