@@ -482,4 +482,46 @@ with tab_rules:
     if not RULES_PATH.exists():
         st.error("❌ STRATEGY_RULES.md not found.")
     else:
-        st.markdown(RULES_PATH.read_text())
+        _rt = RULES_PATH.read_text()
+
+        def _val(symbol: str, pct: bool = False) -> str:
+            pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+            m = re.search(pattern, _rt)
+            if not m:
+                return "—"
+            v = m.group(1)
+            return f"**{v}%**" if pct else f"**{v}**"
+
+        st.markdown(f"""
+**Strategy Inputs**
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `N` | {_val("N")} | Lookback period (days) |
+| `K` | {_val("K")} | Std deviation multiplier |
+| `StopPct` | {_val("StopPct", pct=True)} | Stop loss threshold |
+| Take Profit | Close ≥ SMA | Exit rule |
+
+**Filters / Validation**
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `RDR_THRESHOLD` | {_val("RDR_THRESHOLD")} | Minimum Return-to-Drawdown Ratio |
+| `MIN_TRADES` | {_val("MIN_TRADES")} | Minimum completed trades |
+| `CAGR_THRESHOLD` | {_val("CAGR_THRESHOLD", pct=True)} | Minimum annualized return |
+
+**Walk-Forward Analysis**
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `WF_TRAIN_YEARS` | {_val("WF_TRAIN_YEARS")} | Training window (years) |
+| `WF_TEST_YEARS` | {_val("WF_TEST_YEARS")} | Out-of-sample test window (years) |
+| `WF_STEP_MONTHS` | {_val("WF_STEP_MONTHS")} | Slide step (months) |
+
+**Hardcoded in backtester only (not in Strategy Rules)**
+
+| Variable | Value |
+|----------|-------|
+| `INITIAL_CAPITAL` | $5,000 |
+| `SCORE_DIVISOR` | 100 |
+""")
