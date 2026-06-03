@@ -164,21 +164,27 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int) ->
 
 
 # ── Heat map ──────────────────────────────────────────────────────────────────
-def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list, rdr_threshold: float) -> str:
+def build_heatmap(df_all: pd.DataFrame, df_filtered: pd.DataFrame, n_values: list, k_values: list) -> str:
+    # All scores for lookup
     score_map = {}
     for _, row in df_all.iterrows():
-        score_map[(int(row["N"]), round(row["K"], 1))] = (row["Score"], row["RDR"])
+        score_map[(int(row["N"]), round(row["K"], 1))] = row["Score"]
 
-    good_scores = [s for (s, r) in score_map.values() if r >= rdr_threshold]
-    min_s = min(good_scores) if good_scores else 0
-    max_s = max(good_scores) if good_scores else 1
+    # Only cells that passed ALL filters get colored
+    valid = set()
+    for _, row in df_filtered.iterrows():
+        valid.add((int(row["N"]), round(row["K"], 1)))
+
+    valid_scores = [score_map[k] for k in valid if k in score_map]
+    min_s = min(valid_scores) if valid_scores else 0
+    max_s = max(valid_scores) if valid_scores else 1
 
     best_row = df_all.loc[df_all["Score"].idxmax()]
     best_n   = int(best_row["N"])
     best_k   = round(best_row["K"], 1)
 
-    def cell_color(score, rdr):
-        if rdr < rdr_threshold:
+    def cell_color(key, score):
+        if key not in valid:
             return "#e0e0e0", "#aaa"
         t = (score - min_s) / (max_s - min_s) if max_s > min_s else 1.0
         r = int(200 * (1 - t) + 21  * t)
@@ -198,9 +204,9 @@ def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list, rdr_thre
         for k in k_values:
             key = (n, round(k, 1))
             if key in score_map:
-                score, rdr = score_map[key]
-                bg, fg = cell_color(score, rdr)
-                label  = f"{score:.0f}" if rdr >= rdr_threshold else "·"
+                score  = score_map[key]
+                bg, fg = cell_color(key, score)
+                label  = f"{score:.0f}" if key in valid else "·"
             else:
                 bg, fg = "#e0e0e0", "#aaa"
                 label  = "·"
@@ -373,7 +379,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
     <strong>Bold outline = current strategy params (N={best_score["N"]:.0f}, K={best_score["K"]:.1f})</strong>.
   </p>
   <div class="heatmap-wrap">
-    {build_heatmap(df_all, N_VALUES, K_VALUES, RDR_THRESHOLD)}
+    {build_heatmap(df_all, df, N_VALUES, K_VALUES)}
   </div>
   <div class="heatmap-legend">
     <span>Low score</span>
