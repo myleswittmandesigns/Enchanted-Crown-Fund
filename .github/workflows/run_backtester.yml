@@ -1,12 +1,15 @@
-name: Daily High/Low Update
+name: Run Backtester
 
 on:
-  schedule:
-    - cron: '0 22 * * 1-5'  # 6pm ET (EDT) weekdays
-  workflow_dispatch:          # manual trigger from GitHub UI
+  push:
+    branches: [main]
+    paths:
+      - 'backtester.py'
+      - 'STRATEGY_RULES.md'
+  workflow_dispatch:  # manual trigger from GitHub UI
 
 jobs:
-  update:
+  backtest:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,23 +22,19 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas
+        run: pip install pandas
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Run update
-        run: python update_data.py 2>&1 | tee /tmp/update_output.txt
-
       - name: Run backtester
         run: python backtester.py 2>&1 | tee /tmp/backtest_output.txt
 
-      - name: Commit data + report
+      - name: Commit report
         run: |
-          git add data/ reports/
+          git add reports/
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: daily data + backtest report update [skip ci]"
+          git commit -m "chore: auto-update backtest report [skip ci]"
           git push
-
