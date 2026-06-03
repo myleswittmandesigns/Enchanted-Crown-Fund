@@ -66,11 +66,11 @@
 
 <div class="config">
   <strong>⚙️ Active Configuration</strong>
-  <span style="font-size:0.78rem; color:#888; margin-left:0.75rem;">To edit these values, open the backtester config at the top of <code>backtester.py</code></span>
+  <span style="font-size:0.78rem; color:#888; margin-left:0.75rem;">Filter rules are read from <code>STRATEGY_RULES.md</code>. Search grid and portfolio settings are in <code>backtester.py</code>.</span>
   <div class="config-grid">
     <div><strong>INITIAL_CAPITAL</strong> &nbsp;$5,000</div>
-    <div><strong>RDR_THRESHOLD</strong> &nbsp;5.0</div>
-    <div><strong>CAGR_THRESHOLD</strong> &nbsp;20.0%</div>
+    <div><strong>RDR_THRESHOLD</strong> &nbsp;5</div>
+    <div><strong>CAGR_THRESHOLD</strong> &nbsp;20%</div>
     <div><strong>MIN_TRADES</strong> &nbsp;3</div>
     <div><strong>SCORE_DIVISOR</strong> &nbsp;100</div>
     <div><strong>N_VALUES</strong> &nbsp;16–27 (every 1)</div>
@@ -89,7 +89,7 @@
     <div class="value">13</div>
   </div>
   <div class="card">
-    <div class="label">RDR ≥ 5.0 &amp; CAGR ≥ 20.0%</div>
+    <div class="label">RDR ≥ 5 &amp; CAGR ≥ 20%</div>
     <div class="value">13</div>
   </div>
   <div class="card">
@@ -118,7 +118,7 @@
   <h2>📊 Score Heat Map — N × K</h2>
   <p class="heatmap-caption">
     Each cell = composite Score (Total Return % × RDR ÷ 100).
-    Gray cells did not meet the RDR ≥ 5.0 threshold.
+    Gray cells did not meet the RDR ≥ 5 threshold.
     <strong>Bold outline = current strategy params (N=24, K=2.3)</strong>.
   </p>
   <div class="heatmap-wrap">

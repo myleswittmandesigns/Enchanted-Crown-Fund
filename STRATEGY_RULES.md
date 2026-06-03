@@ -186,6 +186,15 @@ A strategy that earns high returns but with a large drawdown scores lower than o
 
 A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:
 
+### Minimum RDR Rule
+A parameter combination must achieve a **Return-to-Drawdown Ratio of at least 5**. This ensures the strategy earns meaningfully more than it risks losing at its worst point.
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `RDR_THRESHOLD` | **5** | Minimum acceptable RDR. Edit in backtester config. |
+
+---
+
 ### Minimum Trade Count Rule
 A parameter combination must produce at least **3 completed trades** across the full data history to be considered statistically meaningful. Fewer than 3 trades is not enough evidence to evaluate a strategy.
 

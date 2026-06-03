@@ -11,47 +11,55 @@ Run manually or via cron after update_data.py.
 """
 
 import os
+import re
 import pandas as pd
 from itertools import product
 from datetime import datetime
 from pathlib import Path
 
-REPO_DIR  = Path(__file__).parent
-DATA_PATH = REPO_DIR / "data" / "GSIT_daily_high_low.csv"
-OUT_DIR   = REPO_DIR / "reports"
+REPO_DIR   = Path(__file__).parent
+DATA_PATH  = REPO_DIR / "data" / "GSIT_daily_high_low.csv"
+OUT_DIR    = REPO_DIR / "reports"
+RULES_PATH = REPO_DIR / "STRATEGY_RULES.md"
+
+
+def load_strategy_params() -> dict:
+    text = RULES_PATH.read_text()
+
+    def extract(symbol: str):
+        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+        match = re.search(pattern, text)
+        if not match:
+            raise ValueError(f"Cannot find parameter `{symbol}` in STRATEGY_RULES.md")
+        val = match.group(1)
+        return float(val) if "." in val else int(val)
+
+    return {
+        "StopPct":        extract("StopPct") / 100,
+        "RDR_THRESHOLD":  extract("RDR_THRESHOLD"),
+        "MIN_TRADES":     extract("MIN_TRADES"),
+        "CAGR_THRESHOLD": extract("CAGR_THRESHOLD"),
+    }
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                        BACKTESTER CONFIGURATION                             ║
 # ║  All tunable variables live here. Do not edit below the dashed line.        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# ── Portfolio ──────────────────────────────────────────────────────────────────
+# ── Portfolio (hardcoded by design) ───────────────────────────────────────────
 INITIAL_CAPITAL = 5_000     # Starting dollars. Full balance reinvested each trade.
 
-# ── Entry rule ─────────────────────────────────────────────────────────────────
-# Buy when: first day close crosses BELOW the lower Bollinger Band
-# (No variable to set — this rule is fixed by the strategy)
-
-# ── Exit rules ─────────────────────────────────────────────────────────────────
-# Take profit when: close >= SMA (middle Bollinger Band)
-# Stop loss when:   close <= entry × (1 − STOP_PCT)
-# (Take profit rule is fixed. Stop loss % is grid-searched below.)
-
-# ── Parameter grid (values to test) ───────────────────────────────────────────
-N_VALUES        = list(range(16, 28))                   # Lookback period: [16, 17, ..., 27]
-K_VALUES        = [round(k * 0.1, 1) for k in range(15, 31)]  # Band width: [1.5, 1.6, ..., 3.0]
-STOP_PCT_VALUES = [0.46]                                # Stop loss %: single value or list
-
-# ── Results filter ─────────────────────────────────────────────────────────────
-RDR_THRESHOLD   = 5.0       # Hide results with RDR below this value
-MIN_TRADES      = 3         # Hide results with fewer completed trades than this
-CAGR_THRESHOLD  = 20.0      # Hide results with CAGR below this value (%). Must beat 2× S&P 500 long-run avg.
-
-# ── Scoring ────────────────────────────────────────────────────────────────────
+# ── Scoring (hardcoded by design) ─────────────────────────────────────────────
 # Score = Total Return % × RDR ÷ SCORE_DIVISOR
-# Rewards strategies that are both high-return and risk-disciplined.
-# Increase SCORE_DIVISOR to compress the score range; decrease to widen it.
+# Increase SCORE_DIVISOR to compress score range; decrease to widen it.
 SCORE_DIVISOR   = 100
+
+# ── Parameter search grid ─────────────────────────────────────────────────────
+# These define the space the backtester explores to find optimal N and K.
+# All other rules (StopPct, RDR_THRESHOLD, MIN_TRADES, CAGR_THRESHOLD)
+# are read from STRATEGY_RULES.md at runtime.
+N_VALUES = list(range(16, 28))                          # Lookback period: [16, 17, ..., 27]
+K_VALUES = [round(k * 0.1, 1) for k in range(15, 31)]  # Band width: [1.5, 1.6, ..., 3.0]
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -64,7 +72,7 @@ def bollinger(close: pd.Series, n: int, k: float):
 
 
 # ── Single backtest run ───────────────────────────────────────────────────────
-def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
+def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int) -> dict | None:
     sma, _, lower = bollinger(close, n, k)
     buy = (close < lower) & (close.shift(1) >= lower.shift(1))
 
@@ -88,7 +96,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
                 trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "sl"})
                 in_trade = False
 
-    if len(trades) < MIN_TRADES:
+    if len(trades) < min_trades:
         return None
 
     # Compounding model: full portfolio balance reinvested each trade
@@ -156,12 +164,12 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
 
 
 # ── Heat map ──────────────────────────────────────────────────────────────────
-def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list) -> str:
+def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list, rdr_threshold: float) -> str:
     score_map = {}
     for _, row in df_all.iterrows():
         score_map[(int(row["N"]), round(row["K"], 1))] = (row["Score"], row["RDR"])
 
-    good_scores = [s for (s, r) in score_map.values() if r >= RDR_THRESHOLD]
+    good_scores = [s for (s, r) in score_map.values() if r >= rdr_threshold]
     min_s = min(good_scores) if good_scores else 0
     max_s = max(good_scores) if good_scores else 1
 
@@ -170,7 +178,7 @@ def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list) -> str:
     best_k   = round(best_row["K"], 1)
 
     def cell_color(score, rdr):
-        if rdr < RDR_THRESHOLD:
+        if rdr < rdr_threshold:
             return "#e0e0e0", "#aaa"
         t = (score - min_s) / (max_s - min_s) if max_s > min_s else 1.0
         r = int(200 * (1 - t) + 21  * t)
@@ -192,7 +200,7 @@ def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list) -> str:
             if key in score_map:
                 score, rdr = score_map[key]
                 bg, fg = cell_color(score, rdr)
-                label  = f"{score:.0f}" if rdr >= RDR_THRESHOLD else "·"
+                label  = f"{score:.0f}" if rdr >= rdr_threshold else "·"
             else:
                 bg, fg = "#e0e0e0", "#aaa"
                 label  = "·"
@@ -207,7 +215,11 @@ def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list) -> str:
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
-def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_through: str) -> str:
+def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_through: str, params: dict) -> str:
+    RDR_THRESHOLD  = params["RDR_THRESHOLD"]
+    MIN_TRADES     = params["MIN_TRADES"]
+    CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
+    STOP_PCT_VALUES = [params["StopPct"]]
     rows_html = []
     for _, row in df.iterrows():
         good = isinstance(row["RDR"], float) and row["RDR"] >= RDR_THRESHOLD
@@ -305,7 +317,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
 
 <div class="config">
   <strong>⚙️ Active Configuration</strong>
-  <span style="font-size:0.78rem; color:#888; margin-left:0.75rem;">To edit these values, open the backtester config at the top of <code>backtester.py</code></span>
+  <span style="font-size:0.78rem; color:#888; margin-left:0.75rem;">Filter rules are read from <code>STRATEGY_RULES.md</code>. Search grid and portfolio settings are in <code>backtester.py</code>.</span>
   <div class="config-grid">
     <div><strong>INITIAL_CAPITAL</strong> &nbsp;${INITIAL_CAPITAL:,}</div>
     <div><strong>RDR_THRESHOLD</strong> &nbsp;{RDR_THRESHOLD}</div>
@@ -361,7 +373,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
     <strong>Bold outline = current strategy params (N={best_score["N"]:.0f}, K={best_score["K"]:.1f})</strong>.
   </p>
   <div class="heatmap-wrap">
-    {build_heatmap(df_all, N_VALUES, K_VALUES)}
+    {build_heatmap(df_all, N_VALUES, K_VALUES, RDR_THRESHOLD)}
   </div>
   <div class="heatmap-legend">
     <span>Low score</span>
@@ -464,12 +476,19 @@ def main():
     run_date = datetime.today().strftime("%Y-%m-%d")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] GSIT backtester starting")
 
+    params         = load_strategy_params()
+    stop_pct       = params["StopPct"]
+    RDR_THRESHOLD  = params["RDR_THRESHOLD"]
+    MIN_TRADES     = params["MIN_TRADES"]
+    CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
+    STOP_PCT_VALUES = [stop_pct]
+
     df_raw = (
         pd.read_csv(DATA_PATH, parse_dates=["Date"])
         .sort_values("Date")
         .reset_index(drop=True)
     )
-    close       = df_raw["Close"]
+    close        = df_raw["Close"]
     data_through = df_raw["Date"].max().strftime("%Y-%m-%d")
     print(f"  Data: {df_raw['Date'].min().date()} → {data_through}  ({len(df_raw):,} days)")
 
@@ -478,7 +497,7 @@ def main():
 
     results = []
     for n, k, sp in combos:
-        r = run(close, n, k, sp)
+        r = run(close, n, k, sp, MIN_TRADES)
         if r:
             results.append(r)
 
@@ -499,7 +518,7 @@ def main():
 
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_{run_date}.html"
-    out_path.write_text(build_html(out, df_all, run_date, data_through), encoding="utf-8")
+    out_path.write_text(build_html(out, df_all, run_date, data_through, params), encoding="utf-8")
 
     good_count = (out["RDR"] >= RDR_THRESHOLD).sum()
     best       = out.iloc[0]
