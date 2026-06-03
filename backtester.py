@@ -154,8 +154,59 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float) -> dict | None:
     }
 
 
+# ── Heat map ──────────────────────────────────────────────────────────────────
+def build_heatmap(df_all: pd.DataFrame, n_values: list, k_values: list) -> str:
+    score_map = {}
+    for _, row in df_all.iterrows():
+        score_map[(int(row["N"]), round(row["K"], 1))] = (row["Score"], row["RDR"])
+
+    good_scores = [s for (s, r) in score_map.values() if r >= RDR_THRESHOLD]
+    min_s = min(good_scores) if good_scores else 0
+    max_s = max(good_scores) if good_scores else 1
+
+    best_row = df_all.loc[df_all["Score"].idxmax()]
+    best_n   = int(best_row["N"])
+    best_k   = round(best_row["K"], 1)
+
+    def cell_color(score, rdr):
+        if rdr < RDR_THRESHOLD:
+            return "#e0e0e0", "#aaa"
+        t = (score - min_s) / (max_s - min_s) if max_s > min_s else 1.0
+        r = int(200 * (1 - t) + 21  * t)
+        g = int(230 * (1 - t) + 87  * t)
+        b = int(200 * (1 - t) + 36  * t)
+        text = "#fff" if t > 0.55 else "#222"
+        return f"rgb({r},{g},{b})", text
+
+    html = ['<table class="heatmap"><thead><tr>']
+    html.append('<th class="hm-corner">N \\ K</th>')
+    for k in k_values:
+        html.append(f'<th class="hm-kh">{k:.1f}</th>')
+    html.append("</tr></thead><tbody>")
+
+    for n in sorted(n_values):
+        html.append(f'<tr><th class="hm-nh">{n}</th>')
+        for k in k_values:
+            key = (n, round(k, 1))
+            if key in score_map:
+                score, rdr = score_map[key]
+                bg, fg = cell_color(score, rdr)
+                label  = f"{score:.0f}" if rdr >= RDR_THRESHOLD else "·"
+            else:
+                bg, fg = "#e0e0e0", "#aaa"
+                label  = "·"
+            is_best = (n == best_n and round(k, 1) == best_k)
+            outline = ' outline: 3px solid #111; outline-offset: -3px; z-index:1; position:relative;' if is_best else ''
+            weight  = ' font-weight:700;' if is_best else ''
+            html.append(f'<td style="background:{bg}; color:{fg};{outline}{weight}">{label}</td>')
+        html.append("</tr>")
+
+    html.append("</tbody></table>")
+    return "".join(html)
+
+
 # ── HTML report ───────────────────────────────────────────────────────────────
-def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
+def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_through: str) -> str:
     rows_html = []
     for _, row in df.iterrows():
         good = isinstance(row["RDR"], float) and row["RDR"] >= RDR_THRESHOLD
@@ -219,6 +270,20 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
                   gap: 0.3rem 2rem; margin-top: 0.4rem; }}
   .tip-icon {{ font-size: 0.7rem; color: #999; margin-left: 3px;
                vertical-align: super; cursor: default; }}
+  .heatmap-section {{ margin-bottom: 2rem; }}
+  .heatmap-section h2 {{ font-size: 1rem; margin-bottom: 0.25rem; }}
+  .heatmap-caption {{ font-size: 0.8rem; color: #666; margin-bottom: 0.6rem; }}
+  .heatmap-wrap {{ overflow-x: auto; }}
+  table.heatmap {{ border-collapse: collapse; font-size: 0.72rem; }}
+  table.heatmap td, table.heatmap th {{ width: 36px; height: 28px; text-align: center;
+    padding: 0; border: 1px solid #fff; }}
+  table.heatmap th.hm-corner {{ background: #f0f0f0; font-weight: 600; font-size: 0.7rem; width: 36px; }}
+  table.heatmap th.hm-kh {{ background: #f0f0f0; font-weight: 500; }}
+  table.heatmap th.hm-nh {{ background: #f0f0f0; font-weight: 500; text-align: center; }}
+  .heatmap-legend {{ display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem;
+    color: #666; margin-top: 0.4rem; }}
+  .heatmap-legend-bar {{ width: 120px; height: 12px; border-radius: 3px;
+    background: linear-gradient(to right, rgb(200,230,200), rgb(21,87,36)); }}
   #tooltip {{ position: fixed; display: none; background: #1a1a1a; color: #fff;
               font-size: 0.78rem; line-height: 1.6; padding: 0.55rem 0.8rem;
               border-radius: 6px; width: 280px; z-index: 9999;
@@ -282,6 +347,24 @@ def build_html(df: pd.DataFrame, run_date: str, data_through: str) -> str:
     <div class="label">Initial Capital</div>
     <div class="value">${INITIAL_CAPITAL:,}</div>
     <div class="sub">compounded across all trades · edit INITIAL_CAPITAL in backtester.py</div>
+  </div>
+</div>
+
+<div class="heatmap-section">
+  <h2>📊 Score Heat Map — N × K</h2>
+  <p class="heatmap-caption">
+    Each cell = composite Score (Total Return % × RDR ÷ {SCORE_DIVISOR}).
+    Gray cells did not meet the RDR ≥ {RDR_THRESHOLD} threshold.
+    <strong>Bold outline = current strategy params (N={best_score["N"]:.0f}, K={best_score["K"]:.1f})</strong>.
+  </p>
+  <div class="heatmap-wrap">
+    {build_heatmap(df_all, N_VALUES, K_VALUES)}
+  </div>
+  <div class="heatmap-legend">
+    <span>Low score</span>
+    <div class="heatmap-legend-bar"></div>
+    <span>High score</span>
+    &nbsp;·&nbsp; <span style="display:inline-block;width:14px;height:14px;background:#e0e0e0;border:1px solid #ccc;vertical-align:middle;"></span> Below RDR threshold
   </div>
 </div>
 
@@ -399,8 +482,9 @@ def main():
         print("  No valid results — widening the parameter grid may help.")
         return
 
+    df_all = pd.DataFrame(results)
     out = (
-        pd.DataFrame(results)
+        df_all
         .query("RDR >= @RDR_THRESHOLD")
         .sort_values("Score", ascending=False)
         .reset_index(drop=True)
@@ -408,7 +492,7 @@ def main():
 
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_{run_date}.html"
-    out_path.write_text(build_html(out, run_date, data_through), encoding="utf-8")
+    out_path.write_text(build_html(out, df_all, run_date, data_through), encoding="utf-8")
 
     good_count = (out["RDR"] >= RDR_THRESHOLD).sum()
     best       = out.iloc[0]
