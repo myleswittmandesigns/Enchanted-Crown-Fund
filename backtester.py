@@ -226,6 +226,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
             f'<td>${row["Max Drawdown $"]:,.0f}</td>'
             f'<td>{row["Max Drawdown %"]:.0f}%</td>'
             f'<td><strong>{row["RDR"]:.2f}</strong></td>'
+            f'<td>{row["CAGR %"]:.1f}%</td>'
             f'<td><strong>{row["Score"]:.1f}</strong></td>'
         )
         rows_html.append(f"<tr{tr_class}>{cells}</tr>")
@@ -385,6 +386,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
     <th data-tip="Maximum drawdown in dollars\nLargest peak-to-trough decline in portfolio value.\nMax DD $ = max( peak balance − balance at each point )">Max Drawdown $<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Maximum drawdown as % of peak portfolio value\nMax DD % = Max DD $ ÷ peak balance × 100\nTells you the worst % loss from a high point.">Max Drawdown %<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Return-to-Drawdown Ratio\nRDR = Total Return $ ÷ Max Drawdown $\nMeasures how much return you earned per dollar\nof peak-to-trough loss. Above 5 is good.">RDR<span class="tip-icon">ⓘ</span></th>
+    <th data-tip="Compound Annual Growth Rate\nCAGR = (Final ÷ Initial)^(1÷years) − 1\nAnnualizes total return across the full data span.\nAllows apples-to-apples comparison across time periods.">CAGR %<span class="tip-icon">ⓘ</span></th>
     <th data-tip="Composite Score\nScore = Total Return % × RDR ÷ 100\nRewards strategies that are both high-return\nand risk-disciplined. Higher is better.">Score<span class="tip-icon">ⓘ</span></th>
   </tr>
 </thead>
@@ -482,7 +484,10 @@ def main():
         print("  No valid results — widening the parameter grid may help.")
         return
 
+    years  = (df_raw["Date"].max() - df_raw["Date"].min()).days / 365.25
     df_all = pd.DataFrame(results)
+    df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
+    df_all["CAGR %"] = df_all["CAGR %"].round(1)
     out = (
         df_all
         .query("RDR >= @RDR_THRESHOLD")
