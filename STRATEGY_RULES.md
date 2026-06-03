@@ -27,7 +27,7 @@ A mean reversion strategy assumes that price, after deviating significantly from
 
 | Parameter | Symbol | Default | Description |
 |-----------|--------|---------|-------------|
-| Lookback period | `N` | **51** | Number of trading days for all indicators |
+| Lookback period | `N` | **47** | Number of trading days for all indicators |
 | Standard deviation multiplier | `K` | **2.0** | Band width in standard deviations |
 | Stop loss threshold | `StopPct` | **46%** | Exit if close falls ≥ 46% below entry price |
 | Take profit rule | — | **Close crosses upper BB** | Exit when close crosses above the upper Bollinger Band |
@@ -290,3 +290,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.8 | 2026-06-03 | Added Minimum Trade Count Rule — filter out param sets with fewer than 3 completed trades. |
 | 1.9 | 2026-06-03 | Added Portfolio Model, Scoring, and population std (ddof=0) rule to Bollinger Bands section. |
 | 2.0 | 2026-06-03 | Updated params to backtester optimum: N=51, K=2.0. Changed take-profit to Close crosses upper BB. Raised MIN_TRADES to 10. |
+| 2.1 | 2026-06-04 | Testing N=47, K=2.0. |
