@@ -500,7 +500,7 @@ with tab_rules:
 | `N` | {_val("N")} | Lookback period (days) |
 | `K` | {_val("K")} | Std deviation multiplier |
 | `StopPct` | {_val("StopPct", pct=True)} | Stop loss threshold |
-| Take Profit | Close ≥ SMA | Exit rule |
+| Take Profit | Close crosses upper BB | Exit rule |
 
 **Filters / Validation**
 
@@ -524,4 +524,6 @@ with tab_rules:
 |----------|-------|
 | `INITIAL_CAPITAL` | $5,000 |
 | `SCORE_DIVISOR` | 100 |
+| `N_VALUES` | 16–54 |
+| `K_VALUES` | 1.5–3.2 |
 """)
