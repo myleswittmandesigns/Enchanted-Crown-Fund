@@ -35,6 +35,7 @@
                vertical-align: super; cursor: default; }
   .wf-section { margin-bottom: 2rem; }
   .wf-section h2 { font-size: 1rem; margin-bottom: 0.25rem; }
+  .wf-section thead th[title] { cursor: help; border-bottom: 1px dotted #aaa; }
   tr.wf-pass td { background: #f0fff4; }
   tr.wf-ok   td { background: #fffde7; }
   tr.wf-fail td { background: #fdf2f2; color: #999; }
@@ -155,10 +156,16 @@
   <div class="table-wrap">
   <table>
     <thead><tr>
-      <th>#</th><th>Train Period</th><th>Test Period</th>
-      <th>Best N</th><th>Best K</th>
-      <th>Train Return</th><th>Train Score</th>
-      <th>Test Trades</th><th>Test Return</th><th>Test CAGR</th>
+      <th title="Window number — each window slides forward by 6 months">#</th>
+      <th title="The 3-year period used to optimize N and K. The backtester finds the highest-scoring parameter combination within this window.">Train Period</th>
+      <th title="The 1-year out-of-sample period immediately following training. The best parameters from training are applied here without re-optimization — this is the true performance test.">Test Period</th>
+      <th title="The lookback period (days) that scored highest during training. Used as-is on the test window.">Best N</th>
+      <th title="The Bollinger Band width multiplier that scored highest during training. Used as-is on the test window.">Best K</th>
+      <th title="Total return of the best N/K combination on the training period. Higher is expected — the model was optimized here. Use this to sanity-check, not to evaluate.">Train Return</th>
+      <th title="Composite score on the training period: Total Return % × RDR ÷ 100. Used to select the best N/K for that window.">Train Score</th>
+      <th title="Number of completed trades fired during the test (out-of-sample) period. Low counts reduce statistical confidence.">Test Trades</th>
+      <th title="Total return during the out-of-sample test period using the parameters chosen in training. This is the real signal — consistent positive returns across windows indicate a robust strategy.">Test Return</th>
+      <th title="Annualized return during the test period. Highlighted green if it meets the CAGR threshold in STRATEGY_RULES.md.">Test CAGR</th>
     </tr></thead>
     <tbody><tr class="wf-fail"><td>1</td><td>2016-06 → 2019-06</td><td>2019-06 → 2020-06</td><td>16</td><td>2.7</td><td>+51.5%</td><td>inf</td><td>1</td><td>-9.8%</td><td>-9.8%</td></tr><tr class="wf-ok"><td>2</td><td>2016-12 → 2019-12</td><td>2019-12 → 2020-12</td><td>16</td><td>2.7</td><td>+84.8%</td><td>inf</td><td>1</td><td>+11.7%</td><td>+11.7%</td></tr><tr class="wf-ok"><td>3</td><td>2017-06 → 2020-06</td><td>2020-06 → 2021-06</td><td>16</td><td>2.9</td><td>+20.3%</td><td>inf</td><td>1</td><td>+19.0%</td><td>+19.2%</td></tr><tr class="wf-fail"><td>4</td><td>2017-12 → 2020-12</td><td>2020-12 → 2021-12</td><td>16</td><td>2.9</td><td>+20.3%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>5</td><td>2018-06 → 2021-06</td><td>2021-06 → 2022-06</td><td>16</td><td>2.9</td><td>+43.1%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>6</td><td>2018-12 → 2021-12</td><td>2021-12 → 2022-12</td><td>16</td><td>2.9</td><td>+43.1%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-ok"><td>7</td><td>2019-06 → 2022-06</td><td>2022-06 → 2023-06</td><td>16</td><td>2.9</td><td>+43.1%</td><td>inf</td><td>1</td><td>+6.8%</td><td>+6.9%</td></tr><tr class="wf-ok"><td>8</td><td>2019-12 → 2022-12</td><td>2022-12 → 2023-12</td><td>16</td><td>2.9</td><td>+43.1%</td><td>inf</td><td>1</td><td>+6.8%</td><td>+6.9%</td></tr><tr class="wf-fail"><td>9</td><td>2020-06 → 2023-06</td><td>2023-06 → 2024-06</td><td>16</td><td>2.9</td><td>+52.8%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>10</td><td>2020-12 → 2023-12</td><td>2023-12 → 2024-12</td><td>16</td><td>2.9</td><td>+52.8%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>11</td><td>2021-06 → 2024-06</td><td>2024-06 → 2025-06</td><td>16</td><td>2.9</td><td>+52.8%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr><tr class="wf-fail"><td>12</td><td>2021-12 → 2024-12</td><td>2024-12 → 2025-12</td><td>16</td><td>2.9</td><td>+52.8%</td><td>inf</td><td>0</td><td>—</td><td>—</td></tr></tbody>
   </table>
