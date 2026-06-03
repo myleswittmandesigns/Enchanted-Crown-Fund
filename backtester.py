@@ -45,6 +45,7 @@ STOP_PCT_VALUES = [0.46]                                # Stop loss %: single va
 # ── Results filter ─────────────────────────────────────────────────────────────
 RDR_THRESHOLD   = 5.0       # Hide results with RDR below this value
 MIN_TRADES      = 3         # Hide results with fewer completed trades than this
+CAGR_THRESHOLD  = 10.0      # Hide results with CAGR below this value (%). Default: ~S&P 500 long-run avg.
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 # Score = Total Return % × RDR ÷ SCORE_DIVISOR
@@ -308,6 +309,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
   <div class="config-grid">
     <div><strong>INITIAL_CAPITAL</strong> &nbsp;${INITIAL_CAPITAL:,}</div>
     <div><strong>RDR_THRESHOLD</strong> &nbsp;{RDR_THRESHOLD}</div>
+    <div><strong>CAGR_THRESHOLD</strong> &nbsp;{CAGR_THRESHOLD}%</div>
     <div><strong>MIN_TRADES</strong> &nbsp;{MIN_TRADES}</div>
     <div><strong>SCORE_DIVISOR</strong> &nbsp;{SCORE_DIVISOR}</div>
     <div><strong>N_VALUES</strong> &nbsp;{N_VALUES[0]}–{N_VALUES[-1]} (every {N_VALUES[1]-N_VALUES[0]})</div>
@@ -326,7 +328,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, run_date: str, data_throu
     <div class="value">{len(df)}</div>
   </div>
   <div class="card">
-    <div class="label">RDR ≥ {RDR_THRESHOLD} (Good)</div>
+    <div class="label">RDR ≥ {RDR_THRESHOLD} &amp; CAGR ≥ {CAGR_THRESHOLD}%</div>
     <div class="value">{good_count}</div>
   </div>
   <div class="card">
@@ -490,7 +492,7 @@ def main():
     df_all["CAGR %"] = df_all["CAGR %"].round(1)
     out = (
         df_all
-        .query("RDR >= @RDR_THRESHOLD")
+        .query("RDR >= @RDR_THRESHOLD and `CAGR %` >= @CAGR_THRESHOLD")
         .sort_values("Score", ascending=False)
         .reset_index(drop=True)
     )

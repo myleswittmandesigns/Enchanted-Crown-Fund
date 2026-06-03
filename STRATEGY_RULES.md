@@ -146,6 +146,17 @@ Exit when today's close has fallen 46% or more below the entry price. This caps 
 
 A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:
 
+### Minimum CAGR Rule
+A parameter combination is only considered viable if its **CAGR exceeds the S&P 500 long-run average (~10% annually)**. There is no reason to run an active single-stock strategy that underperforms simply holding the index.
+
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `CAGR_THRESHOLD` | **10%** | Minimum acceptable annualized return. Edit in backtester config. |
+
+Any combination below this threshold is automatically filtered from the results table. The 10% figure reflects the S&P 500's nominal historical average (dividends reinvested, pre-inflation). Adjust `CAGR_THRESHOLD` in `backtester.py` if benchmarking against a different index or time period.
+
+---
+
 ### The 8-Neighbor Rule
 On the N × K score heat map, every one of the 8 cells surrounding the candidate (N±1, K±0.1 in all directions) must:
 
@@ -202,3 +213,4 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.4 | 2026-06-02 | Removed RSI entirely — variable definitions, inputs, indicator section, planned enhancements, open questions, and derivation notes. |
 | 1.5 | 2026-06-02 | Updated params to backtester optimum: N=24, K=2.3. Added StopPct=46% and Take Profit (Close ≥ SMA) to Inputs and Exit Rules section. |
 | 1.6 | 2026-06-03 | Added Parameter Validation Rule — the 8-neighbor robustness test for backtester recommendations. |
+| 1.7 | 2026-06-03 | Added Minimum CAGR Rule — filter out any param set with CAGR below S&P 500 average (~10%). |
