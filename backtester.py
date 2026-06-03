@@ -364,10 +364,16 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
   <div class="table-wrap">
   <table>
     <thead><tr>
-      <th>#</th><th>Train Period</th><th>Test Period</th>
-      <th>Best N</th><th>Best K</th>
-      <th>Train Return</th><th>Train Score</th>
-      <th>Test Trades</th><th>Test Return</th><th>Test CAGR</th>
+      <th title="Window number — each window slides forward by {step_mo} months">#</th>
+      <th title="The {train_yrs}-year period used to optimize N and K. The backtester finds the highest-scoring parameter combination within this window.">Train Period</th>
+      <th title="The {test_yrs}-year out-of-sample period immediately following training. The best parameters from training are applied here without re-optimization — this is the true performance test.">Test Period</th>
+      <th title="The lookback period (days) that scored highest during training. Used as-is on the test window.">Best N</th>
+      <th title="The Bollinger Band width multiplier that scored highest during training. Used as-is on the test window.">Best K</th>
+      <th title="Total return of the best N/K combination on the training period. Higher is expected — the model was optimized here. Use this to sanity-check, not to evaluate.">Train Return</th>
+      <th title="Composite score on the training period: Total Return % × RDR ÷ 100. Used to select the best N/K for that window.">Train Score</th>
+      <th title="Number of completed trades fired during the test (out-of-sample) period. Low counts reduce statistical confidence.">Test Trades</th>
+      <th title="Total return during the out-of-sample test period using the parameters chosen in training. This is the real signal — consistent positive returns across windows indicate a robust strategy.">Test Return</th>
+      <th title="Annualized return during the test period. Highlighted green if it meets the CAGR threshold in STRATEGY_RULES.md.">Test CAGR</th>
     </tr></thead>
     <tbody>{"".join(rows)}</tbody>
   </table>
@@ -456,6 +462,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
                vertical-align: super; cursor: default; }}
   .wf-section {{ margin-bottom: 2rem; }}
   .wf-section h2 {{ font-size: 1rem; margin-bottom: 0.25rem; }}
+  .wf-section thead th[title] {{ cursor: help; border-bottom: 1px dotted #aaa; }}
   tr.wf-pass td {{ background: #f0fff4; }}
   tr.wf-ok   td {{ background: #fffde7; }}
   tr.wf-fail td {{ background: #fdf2f2; color: #999; }}
