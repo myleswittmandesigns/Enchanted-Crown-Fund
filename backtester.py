@@ -4,7 +4,7 @@ GSIT Mean Reversion Backtester — headless, no UI required.
 
 Grid-searches N, K, and StopPct combinations against the full GSIT price history.
 Entry:  first day close crosses below the lower Bollinger Band
-Exit:   close >= SMA (take profit)  OR  close <= entry × (1 - StopPct) (stop loss)
+Exit:   close crosses above upper BB (take profit)  OR  close <= entry × (1 - StopPct) (stop loss)
 
 Writes a sortable HTML report to reports/backtest_YYYY-MM-DD.html.
 Run manually or via cron after update_data.py.
@@ -61,8 +61,8 @@ SCORE_DIVISOR   = 100
 # These define the space the backtester explores to find optimal N and K.
 # All other rules (StopPct, RDR_THRESHOLD, MIN_TRADES, CAGR_THRESHOLD)
 # are read from STRATEGY_RULES.md at runtime.
-N_VALUES = list(range(16, 28))                          # Lookback period: [16, 17, ..., 27]
-K_VALUES = [round(k * 0.1, 1) for k in range(15, 31)]  # Band width: [1.5, 1.6, ..., 3.0]
+N_VALUES = list(range(16, 55))                          # Lookback period: [16, 17, ..., 54]
+K_VALUES = [round(k * 0.1, 1) for k in range(15, 33)]  # Band width: [1.5, 1.6, ..., 3.2]
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ def bollinger(close: pd.Series, n: int, k: float):
 # ── Single backtest run ───────────────────────────────────────────────────────
 def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
         entry_from_idx: int = 0) -> dict | None:
-    sma, _, lower = bollinger(close, n, k)
+    sma, upper, lower = bollinger(close, n, k)
     buy = (close < lower) & (close.shift(1) >= lower.shift(1))
 
     trades = []
@@ -93,7 +93,8 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
                 entry_idx   = i
         else:
             c = close.iloc[i]
-            if c >= sma.iloc[i]:
+            # Take profit: close crosses above upper Bollinger Band
+            if c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]:
                 trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "tp"})
                 in_trade = False
             elif c <= entry_price * (1 - stop_pct):
@@ -492,7 +493,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   Data through: {data_through} &nbsp;·&nbsp;
   Initial capital: ${INITIAL_CAPITAL:,} (compounded across all trades) &nbsp;·&nbsp;
   Entry: first close below lower Bollinger Band &nbsp;·&nbsp;
-  Exit: close ≥ SMA (take profit) or close ≤ entry × (1 − Stop%) (stop loss)
+  Exit: close crosses above upper BB (take profit) or close ≤ entry × (1 − Stop%) (stop loss)
 </div>
 
 <div class="config">
@@ -508,7 +509,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
     <div><strong>K_VALUES</strong> &nbsp;{K_VALUES[0]}–{K_VALUES[-1]} (every {round(K_VALUES[1]-K_VALUES[0],1) if len(K_VALUES) > 1 else "—"})</div>
     <div><strong>STOP_PCT_VALUES</strong> &nbsp;{", ".join(f"{s:.0%}" for s in STOP_PCT_VALUES)}</div>
     <div><strong>Entry</strong> &nbsp;Close crosses below lower BB</div>
-    <div><strong>Take profit</strong> &nbsp;Close ≥ SMA</div>
+    <div><strong>Take profit</strong> &nbsp;Close crosses upper BB</div>
     <div><strong>Stop loss</strong> &nbsp;Close ≤ entry × (1 − Stop%)</div>
     <div><strong>Score formula</strong> &nbsp;Total Return % × RDR ÷ {SCORE_DIVISOR}</div>
   </div>

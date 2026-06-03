@@ -30,7 +30,7 @@ A mean reversion strategy assumes that price, after deviating significantly from
 | Lookback period | `N` | **24** | Number of trading days for all indicators |
 | Standard deviation multiplier | `K` | **2.3** | Band width in standard deviations |
 | Stop loss threshold | `StopPct` | **46%** | Exit if close falls ≥ 46% below entry price |
-| Take profit rule | — | **Close ≥ SMA** | Exit when close returns to the N-day SMA (middle band) |
+| Take profit rule | — | **Close crosses upper BB** | Exit when close crosses above the upper Bollinger Band |
 
 ---
 
@@ -125,9 +125,10 @@ Once a buy signal fires and a position is entered at `P_entry`, the position is 
 
 ### Take Profit ✅
 ```
-C(t) ≥ μ(N)
+C(t)   > Upper Band(t)
+C(t-1) ≤ Upper Band(t-1)
 ```
-Exit when today's close is at or above the N-day SMA (middle Bollinger Band). This is the canonical mean reversion exit — price has returned to its equilibrium.
+Exit on the first day close crosses above the upper Bollinger Band.
 
 ### Stop Loss 🛑
 ```
@@ -214,7 +215,7 @@ A parameter combination must produce at least **3 completed trades** across the 
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `MIN_TRADES` | **3** | Minimum completed trades required. Edit in backtester config. |
+| `MIN_TRADES` | **10** | Minimum completed trades required. Edit in backtester config. |
 
 ---
 
