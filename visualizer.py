@@ -34,7 +34,7 @@ def load_strategy_params() -> dict:
     text = rules_path.read_text()
 
     def extract(symbol: str):
-        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)\*{{0,2}}\s*\|"
+        pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
         match = re.search(pattern, text)
         if not match:
             st.error(f"❌ Cannot find parameter `{symbol}` in STRATEGY_RULES.md. Please check the file.")
@@ -42,13 +42,15 @@ def load_strategy_params() -> dict:
         val = match.group(1)
         return float(val) if "." in val else int(val)
 
-    N = extract("N")
-    K = extract("K")
-    return {"N": N, "K": K}
+    N        = extract("N")
+    K        = extract("K")
+    StopPct  = extract("StopPct") / 100
+    return {"N": N, "K": K, "StopPct": StopPct}
 
-params = load_strategy_params()
-N = params["N"]
-K = params["K"]
+params   = load_strategy_params()
+N        = params["N"]
+K        = params["K"]
+STOP_PCT = params["StopPct"]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def compute_bollinger(close: pd.Series, n: int, k: int):
@@ -63,6 +65,73 @@ def compute_signals(close: pd.Series, upper: pd.Series, lower: pd.Series):
     buy  = (close < lower) & (close.shift(1) >= lower.shift(1))
     sell = (close > upper) & (close.shift(1) <= upper.shift(1))
     return buy, sell
+
+
+def simulate_portfolio(df: pd.DataFrame, sma: pd.Series, lower_bb: pd.Series,
+                       initial: float, stop_pct: float):
+    balance  = initial
+    in_trade = False
+    entry_price = entry_date = shares = None
+    trades = []
+
+    for i in range(1, len(df)):
+        close        = df["Close"].iloc[i]
+        prev_close   = df["Close"].iloc[i - 1]
+        cur_sma      = sma.iloc[i]
+        cur_lower    = lower_bb.iloc[i]
+        prev_lower   = lower_bb.iloc[i - 1]
+        date         = df["Date"].iloc[i]
+
+        if pd.isna(cur_sma) or pd.isna(cur_lower) or pd.isna(prev_lower):
+            continue
+
+        if not in_trade:
+            if close < cur_lower and prev_close >= prev_lower:
+                shares      = balance / close
+                entry_price = close
+                entry_date  = date
+                in_trade    = True
+        else:
+            stop_price = entry_price * (1 - stop_pct)
+            if close >= cur_sma:
+                balance = shares * close
+                trades.append({
+                    "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                    "Entry $":     round(entry_price, 2),
+                    "Exit Date":   date.strftime("%Y-%m-%d"),
+                    "Exit $":      round(close, 2),
+                    "Exit Reason": "Take Profit ✅",
+                    "Return %":    round((close / entry_price - 1) * 100, 1),
+                    "Balance $":   round(balance, 2),
+                })
+                in_trade = False
+            elif close <= stop_price:
+                balance = shares * close
+                trades.append({
+                    "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                    "Entry $":     round(entry_price, 2),
+                    "Exit Date":   date.strftime("%Y-%m-%d"),
+                    "Exit $":      round(close, 2),
+                    "Exit Reason": "Stop Loss 🛑",
+                    "Return %":    round((close / entry_price - 1) * 100, 1),
+                    "Balance $":   round(balance, 2),
+                })
+                in_trade = False
+
+    if in_trade:
+        close   = df["Close"].iloc[-1]
+        balance = shares * close
+        trades.append({
+            "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+            "Entry $":     round(entry_price, 2),
+            "Exit Date":   "—",
+            "Exit $":      round(close, 2),
+            "Exit Reason": "Still Open 🟡",
+            "Return %":    round((close / entry_price - 1) * 100, 1),
+            "Balance $":   round(balance, 2),
+        })
+
+    return round(balance, 2), trades
 
 
 # ── Load GSIT ─────────────────────────────────────────────────────────────────
@@ -176,81 +245,7 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ── Recent N-day chart ────────────────────────────────────────────────────────
 st.divider()
-st.markdown(f"### Last {N} Trading Days")
-
-recent_df   = df_full.tail(N).reset_index(drop=True)
-
-sma_r, upper_r, lower_r = compute_bollinger(df_full["Close"], N, K)
-buy_r, sell_r            = compute_signals(df_full["Close"], upper_r, lower_r)
-
-recent_sma   = sma_r.tail(N).reset_index(drop=True)
-recent_upper = upper_r.tail(N).reset_index(drop=True)
-recent_lower = lower_r.tail(N).reset_index(drop=True)
-recent_buy   = buy_r.tail(N).reset_index(drop=True)
-recent_sell  = sell_r.tail(N).reset_index(drop=True)
-
-fig2 = go.Figure()
-
-fig2.add_trace(go.Candlestick(
-    x=recent_df["Date"],
-    open=recent_df["Open"], high=recent_df["High"],
-    low=recent_df["Low"],   close=recent_df["Close"],
-    name="Price",
-    increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
-    decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
-    showlegend=False,
-))
-
-fig2.add_trace(go.Scatter(
-    x=recent_df["Date"], y=recent_sma,
-    mode="lines", name=f"SMA({N})",
-    line=dict(color="orange", width=1.5),
-))
-
-fig2.add_trace(go.Scatter(
-    x=recent_df["Date"], y=recent_upper,
-    mode="lines", name=f"BB Upper (×{K}σ)",
-    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-))
-
-fig2.add_trace(go.Scatter(
-    x=recent_df["Date"], y=recent_lower,
-    mode="lines", name=f"BB Lower (×{K}σ)",
-    line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
-    fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
-))
-
-if show_signals:
-    fig2.add_trace(go.Scatter(
-        x=recent_df["Date"][recent_buy], y=recent_df["Low"][recent_buy] * 0.98,
-        mode="markers", name="Buy",
-        marker=dict(symbol="triangle-up", size=12, color="lime", line=dict(color="green", width=1)),
-    ))
-
-    fig2.add_trace(go.Scatter(
-        x=recent_df["Date"][recent_sell], y=recent_df["High"][recent_sell] * 1.02,
-        mode="markers", name="Sell",
-        marker=dict(symbol="triangle-down", size=12, color="red", line=dict(color="darkred", width=1)),
-    ))
-
-fig2.update_layout(
-    xaxis=dict(
-        type="date",
-        tickformat="%b %d",
-        rangeslider=dict(visible=False),
-    ),
-    yaxis=dict(tickprefix="$", automargin=True),
-    hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
-    height=420,
-    margin=dict(l=10, r=10, t=40, b=10),
-    dragmode="pan",
-)
-
-st.plotly_chart(fig2, use_container_width=True)
-st.caption(f"{recent_df['Date'].iloc[0].date()} → {recent_df['Date'].iloc[-1].date()}")
 
 # ── Summary stats ─────────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
@@ -265,6 +260,35 @@ if show_signals:
     st.caption(f"Signals in range: {buy_signals.sum()} buy ▲  ·  {sell_signals.sum()} sell ▼")
 
 st.caption(f"{len(df):,} trading days · {df['Date'].iloc[0].date()} → {df['Date'].iloc[-1].date()}")
+
+# ── Portfolio simulation ──────────────────────────────────────────────────────
+st.divider()
+st.markdown("### 💰 Portfolio Simulation")
+st.caption(f"Buys on BB lower crossover · Exits at SMA (take profit) or −{int(STOP_PCT*100)}% (stop loss) · Full balance reinvested each trade")
+
+initial_investment = st.number_input(
+    "Initial investment ($)",
+    min_value=1.0, value=5000.0, step=100.0, format="%.2f"
+)
+
+final_balance, trades = simulate_portfolio(df, sma, lower_bb, initial_investment, STOP_PCT)
+
+if not trades:
+    st.info("No completed trades in the selected date range.")
+else:
+    total_return_pct = (final_balance / initial_investment - 1) * 100
+    closed = [t for t in trades if t["Exit Reason"] != "Still Open 🟡"]
+    wins   = [t for t in closed if t["Return %"] > 0]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Final Balance",  f"${final_balance:,.2f}")
+    m2.metric("Total Return",   f"{total_return_pct:+.1f}%")
+    m3.metric("Trades",         len(trades))
+    m4.metric("Win Rate",       f"{len(wins)/len(closed)*100:.0f}%" if closed else "—")
+
+    trade_df = pd.DataFrame(trades)
+    trade_df.insert(0, "#", range(1, len(trade_df) + 1))
+    st.dataframe(trade_df, use_container_width=True, hide_index=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 most_recent = df_full["Date"].max().strftime("%B %d, %Y")
