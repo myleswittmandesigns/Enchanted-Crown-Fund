@@ -1,0 +1,91 @@
+name: Bootstrap Historical Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date for full historical pull (YYYY-MM-DD)'
+        required: true
+        default: '2016-01-01'
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install massive pandas
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bootstrap full history
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import os
+          import pandas as pd
+          from datetime import datetime
+          from massive import RESTClient
+
+          TICKERS    = ["GSIT"]
+          START_DATE = os.environ.get("START_DATE", "${{ github.event.inputs.start_date }}")
+          TODAY      = datetime.today().strftime("%Y-%m-%d")
+          DATA_DIR   = "data"
+
+          client = RESTClient(api_key=os.environ["MASSIVE_API_KEY"])
+
+          for ticker in TICKERS:
+              print(f"Fetching {ticker} from {START_DATE} → {TODAY} ...")
+              aggs = []
+              for a in client.list_aggs(
+                  ticker     = ticker,
+                  multiplier = 1,
+                  timespan   = "day",
+                  from_      = START_DATE,
+                  to         = TODAY,
+                  limit      = 50000,
+                  adjusted   = True,
+              ):
+                  aggs.append(a)
+
+              if not aggs:
+                  print(f"  No data returned for {ticker}")
+                  continue
+
+              rows = []
+              for a in aggs:
+                  date = pd.Timestamp(a.timestamp, unit="ms", tz="UTC").normalize().tz_localize(None)
+                  rows.append({
+                      "Date":   date,
+                      "Open":   a.open,
+                      "High":   a.high,
+                      "Low":    a.low,
+                      "Close":  a.close,
+                      "Volume": a.volume,
+                  })
+
+              df = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
+              path = os.path.join(DATA_DIR, f"{ticker}_daily_high_low.csv")
+              df.to_csv(path, index=False)
+              print(f"  {ticker}: wrote {len(df)} rows ({df['Date'].min().date()} → {df['Date'].max().date()})")
+
+          EOF
+
+      - name: Commit fresh data
+        run: |
+          git add data/
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: bootstrap full GSIT history from Massive API (${{ github.event.inputs.start_date }} → today)"
+          git push
