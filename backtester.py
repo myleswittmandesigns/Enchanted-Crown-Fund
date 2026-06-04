@@ -64,21 +64,32 @@ SCORE_DIVISOR   = 100
 # are read from STRATEGY_RULES.md at runtime.
 N_VALUES = list(range(16, 55))                          # Lookback period: [16, 17, ..., 54]
 K_VALUES = [round(k * 0.1, 1) for k in range(15, 33)]  # Band width: [1.5, 1.6, ..., 3.2]
+STOP_PCT_VALUES = [0.20, 0.30, 0.40, 0.50, 0.60]       # Stop loss: [20%, 30%, 40%, 50%, 60%]
 
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 # ── Indicators ────────────────────────────────────────────────────────────────
-def bollinger(close: pd.Series, n: int, k: float):
+def bollinger_base(close: pd.Series, n: int):
+    """Compute SMA and STD for a given N — k-independent. Call once per N, reuse across K values."""
     sma = close.rolling(n).mean()
     std = close.rolling(n).std(ddof=0)
+    return sma, std
+
+
+def bollinger(close: pd.Series, n: int, k: float):
+    sma, std = bollinger_base(close, n)
     return sma, sma + k * std, sma - k * std
 
 
 # ── Single backtest run ───────────────────────────────────────────────────────
 def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
-        entry_from_idx: int = 0) -> dict | None:
-    sma, upper, lower = bollinger(close, n, k)
+        entry_from_idx: int = 0, _precomp: tuple = None) -> dict | None:
+    """_precomp: optional (sma, upper, lower) from indicator cache — avoids recomputation."""
+    if _precomp is not None:
+        sma, upper, lower = _precomp
+    else:
+        sma, upper, lower = bollinger(close, n, k)
     buy = (close < lower) & (close.shift(1) >= lower.shift(1))
 
     # Single-pass: signal detection + compounding balance + daily mark-to-market
@@ -168,8 +179,10 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
 
 
 # ── Walk-forward analysis ─────────────────────────────────────────────────────
-def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list) -> list:
-    stop_pct      = params["StopPct"]
+def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list,
+                 stop_values: list = None) -> list:
+    if stop_values is None:
+        stop_values = [params["StopPct"]]
     train_years   = int(params["WF_TRAIN_YEARS"])
     test_years    = int(params["WF_TEST_YEARS"])
     step_months   = int(params["WF_STEP_MONTHS"])
@@ -193,20 +206,30 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
         train_end_idx = int(df_raw[te_mask].index[0])
         test_end_idx  = int(df_raw[xt_mask].index[0])
 
-        # Optimize: find best (N, K) on train period
+        # Optimize: find best (N, K, Stop) on train period
         best_score  = -1
-        best_n, best_k = n_values[0], k_values[0]
+        best_n, best_k, best_stop = n_values[0], k_values[0], stop_values[0]
         best_train  = None
+        # Precompute SMA+STD per N for this training window
+        _wf_cache = {}
         for n in n_values:
+            _sma, _std = bollinger_base(close.iloc[:train_end_idx], n)
+            _wf_cache[n] = (_sma, _std)
+        for n in n_values:
+            _sma, _std = _wf_cache[n]
             for k in k_values:
-                r = run(close.iloc[:train_end_idx], n, k, stop_pct, wf_min_trades)
-                if r and r["Score"] > best_score:
-                    best_score = r["Score"]
-                    best_n, best_k = n, k
-                    best_train = r
+                _upper = _sma + k * _std
+                _lower = _sma - k * _std
+                for stop_pct in stop_values:
+                    r = run(close.iloc[:train_end_idx], n, k, stop_pct, wf_min_trades,
+                            _precomp=(_sma, _upper, _lower))
+                    if r and r["Score"] > best_score:
+                        best_score = r["Score"]
+                        best_n, best_k, best_stop = n, k, stop_pct
+                        best_train = r
 
         # Evaluate best params on test period (use full history for Bollinger warmup)
-        test_r = run(close.iloc[:test_end_idx], best_n, best_k, stop_pct, 1,
+        test_r = run(close.iloc[:test_end_idx], best_n, best_k, best_stop, 1,
                      entry_from_idx=train_end_idx)
 
         # Annualize test return over the actual test window length
@@ -226,6 +249,7 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
             "Test End":       test_end_date.strftime("%Y-%m"),
             "Best N":         best_n,
             "Best K":         round(best_k, 1),
+            "Best Stop":      f"{best_stop:.0%}",
             "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
             "Train Score":    round(best_train["Score"], 1)          if best_train else None,
             "Test Trades":    test_r["Trades"]                        if test_r    else 0,
@@ -239,60 +263,169 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
 
 
 # ── Heat map ──────────────────────────────────────────────────────────────────
-def build_heatmap(df_all: pd.DataFrame, df_filtered: pd.DataFrame, n_values: list, k_values: list) -> str:
-    # All scores for lookup
-    score_map = {}
+def find_hotspots(df_all: pd.DataFrame, n_values: list, k_values: list,
+                  stop_values: list, top_pct: float = 0.10) -> list:
+    """
+    Find connected high-score regions in (N, K, Stop) space using 3D BFS clustering.
+    Returns clusters sorted by peak score, each with bounding box and centroid.
+    """
+    if df_all.empty or len(df_all) < 5:
+        return []
+
+    threshold = df_all["Score"].quantile(1 - top_pct)
+    hot = df_all[df_all["Score"] >= threshold]
+    if hot.empty:
+        return []
+
+    n_sorted = sorted(set(int(n) for n in n_values))
+    k_sorted = sorted(set(round(k, 1) for k in k_values))
+    s_sorted = sorted(set(round(s, 2) for s in stop_values))
+
+    n_idx = {n: i for i, n in enumerate(n_sorted)}
+    k_idx = {k: i for i, k in enumerate(k_sorted)}
+    s_idx = {s: i for i, s in enumerate(s_sorted)}
+
+    hot_set: dict = {}
+    for _, row in hot.iterrows():
+        key = (n_idx[int(row["N"])], k_idx[round(row["K"], 1)], s_idx[round(row["Stop %"], 2)])
+        hot_set[key] = row["Score"]
+
+    visited: set = set()
+    clusters: list = []
+
+    for start in hot_set:
+        if start in visited:
+            continue
+        cluster_pts: list = []
+        queue = [start]
+        while queue:
+            node = queue.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            cluster_pts.append(node)
+            ni, ki, si = node
+            for dn, dk, ds in [(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]:
+                nb = (ni+dn, ki+dk, si+ds)
+                if nb in hot_set and nb not in visited:
+                    queue.append(nb)
+        clusters.append(cluster_pts)
+
+    clusters.sort(key=lambda c: max(hot_set[p] for p in c), reverse=True)
+
+    n_rev = {i: n for n, i in n_idx.items()}
+    k_rev = {i: k for k, i in k_idx.items()}
+    s_rev = {i: s for s, i in s_idx.items()}
+
+    result = []
+    for cluster in clusters:
+        ns     = [n_rev[p[0]] for p in cluster]
+        ks     = [k_rev[p[1]] for p in cluster]
+        ss     = [s_rev[p[2]] for p in cluster]
+        scores = [hot_set[p] for p in cluster]
+        peak_i = scores.index(max(scores))
+        result.append({
+            "size":       len(cluster),
+            "peak_score": max(scores),
+            "peak_n":     n_rev[cluster[peak_i][0]],
+            "peak_k":     k_rev[cluster[peak_i][1]],
+            "peak_stop":  s_rev[cluster[peak_i][2]],
+            "n_range":    (min(ns), max(ns)),
+            "k_range":    (min(ks), max(ks)),
+            "stop_range": (min(ss), max(ss)),
+        })
+    return result
+
+
+def build_heatmap_3d(df_all: pd.DataFrame, df_filtered: pd.DataFrame,
+                     n_values: list, k_values: list, stop_values: list) -> str:
+    """
+    Interactive 3D heat map: N × K grid with a tab selector per stop value.
+    All stop panels share the same color scale for cross-stop comparison.
+    """
+    score_map: dict = {}
     for _, row in df_all.iterrows():
-        score_map[(int(row["N"]), round(row["K"], 1))] = row["Score"]
+        score_map[(int(row["N"]), round(row["K"], 1), round(row["Stop %"], 2))] = row["Score"]
 
-    # Only cells that passed ALL filters get colored
-    valid = set()
+    valid_set: set = set()
     for _, row in df_filtered.iterrows():
-        valid.add((int(row["N"]), round(row["K"], 1)))
+        valid_set.add((int(row["N"]), round(row["K"], 1), round(row["Stop %"], 2)))
 
-    valid_scores = [score_map[k] for k in valid if k in score_map]
+    valid_scores = [score_map[k] for k in valid_set if k in score_map]
     min_s = min(valid_scores) if valid_scores else 0
     max_s = max(valid_scores) if valid_scores else 1
 
-    best_row = df_all.loc[df_all["Score"].idxmax()]
-    best_n   = int(best_row["N"])
-    best_k   = round(best_row["K"], 1)
+    # Global best for gold highlight
+    global_best = None
+    if not df_filtered.empty:
+        gb = df_filtered.loc[df_filtered["Score"].idxmax()]
+        global_best = (int(gb["N"]), round(gb["K"], 1), round(gb["Stop %"], 2))
 
-    def cell_color(key, score):
-        if key not in valid:
-            return "#e0e0e0", "#aaa"
-        t = (score - min_s) / (max_s - min_s) if max_s > min_s else 1.0
-        r = int(200 * (1 - t) + 21  * t)
-        g = int(230 * (1 - t) + 87  * t)
-        b = int(200 * (1 - t) + 36  * t)
-        text = "#fff" if t > 0.55 else "#222"
-        return f"rgb({r},{g},{b})", text
+    k_sorted = sorted(set(round(k, 1) for k in k_values))
+    n_sorted = sorted(set(int(n) for n in n_values))
+    s_sorted = sorted(set(round(s, 2) for s in stop_values))
 
-    html = ['<table class="heatmap"><thead><tr>']
-    html.append('<th class="hm-corner">N \\ K</th>')
-    for k in k_values:
-        html.append(f'<th class="hm-kh">{k:.1f}</th>')
-    html.append("</tr></thead><tbody>")
+    def cell_color(score, is_global_best):
+        if score is None:
+            return 'background:#e0e0e0;'
+        t = (score - min_s) / (max_s - min_s) if max_s > min_s else 0.5
+        r = int(200 - t * 179)
+        g = int(230 - t * 143)
+        b = int(200 - t * 164)
+        border = ' outline:3px solid #FFD700; outline-offset:-2px; z-index:1; position:relative;' if is_global_best else ''
+        return f'background:rgb({r},{g},{b});{border}'
 
-    for n in sorted(n_values):
-        html.append(f'<tr><th class="hm-nh">{n}</th>')
-        for k in k_values:
-            key = (n, round(k, 1))
-            if key in score_map:
-                score  = score_map[key]
-                bg, fg = cell_color(key, score)
-                label  = f"{score:.0f}" if key in valid else "·"
-            else:
-                bg, fg = "#e0e0e0", "#aaa"
-                label  = "·"
-            is_best = (n == best_n and round(k, 1) == best_k)
-            outline = ' outline: 3px solid #111; outline-offset: -3px; z-index:1; position:relative;' if is_best else ''
-            weight  = ' font-weight:700;' if is_best else ''
-            html.append(f'<td style="background:{bg}; color:{fg};{outline}{weight}">{label}</td>')
-        html.append("</tr>")
+    tabs_html = []
+    panels_html = []
 
-    html.append("</tbody></table>")
-    return "".join(html)
+    for si, stop_pct in enumerate(s_sorted):
+        stop_label = f"{stop_pct:.0%}"
+        is_first   = si == 0
+        tabs_html.append(
+            f'<button class="hm3-tab{"  hm3-active" if is_first else ""}" '
+            f'onclick="showStop({si})" id="hm3-btn-{si}">{stop_label}</button>'
+        )
+
+        header = '<th class="hm-corner">N \\ K</th>' + ''.join(
+            f'<th class="hm-kh">{k:.1f}</th>' for k in k_sorted
+        )
+        rows = []
+        for n in n_sorted:
+            cells = [f'<th class="hm-nh">{n}</th>']
+            for k in k_sorted:
+                key   = (n, round(k, 1), round(stop_pct, 2))
+                score = score_map.get(key)
+                valid = key in valid_set
+                is_gb = (key == global_best)
+                style = cell_color(score if valid else None, is_gb)
+                tip   = (f'N={n} K={k:.1f} Stop={stop_label}&#10;'
+                         + (f'Score={score:.1f}' if (score and valid) else 'Below filters'))
+                txt   = f'{score:.0f}' if (score and valid) else '·'
+                cells.append(f'<td style="{style}" title="{tip}">{txt}</td>')
+            rows.append(f'<tr>{"".join(cells)}</tr>')
+
+        display = '' if is_first else ' style="display:none"'
+        panels_html.append(
+            f'<div id="hm3-panel-{si}" class="hm3-panel"{display}>'
+            f'<table class="heatmap"><thead><tr>{header}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
+        )
+
+    js = """
+<script>
+function showStop(idx) {
+  var panels = document.querySelectorAll('.hm3-panel');
+  var btns   = document.querySelectorAll('.hm3-tab');
+  for (var i = 0; i < panels.length; i++) {
+    panels[i].style.display = (i === idx) ? '' : 'none';
+    btns[i].classList.toggle('hm3-active', i === idx);
+  }
+}
+</script>"""
+
+    tabs_div   = f'<div class="hm3-tabs">{"".join(tabs_html)}</div>'
+    panels_div = "".join(panels_html)
+    return f'{tabs_div}{panels_div}{js}'
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
@@ -326,6 +459,7 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
             f'<td>{w["Test Start"]} → {w["Test End"]}</td>'
             f'<td>{w["Best N"]}</td>'
             f'<td>{w["Best K"]:.1f}</td>'
+            f'<td>{w.get("Best Stop","—")}</td>'
             f'<td>{w["Train Return %"]:+.1f}%</td>'
             f'<td>{w["Train Score"]:.1f}</td>'
             f'<td>{w["Test Trades"]}</td>'
@@ -369,6 +503,7 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
       <th title="The {test_yrs}-year out-of-sample period immediately following training. The best parameters from training are applied here without re-optimization — this is the true performance test.">Test Period</th>
       <th title="The lookback period (days) that scored highest during training. Used as-is on the test window.">Best N</th>
       <th title="The Bollinger Band width multiplier that scored highest during training. Used as-is on the test window.">Best K</th>
+      <th title="The stop loss percentage that scored highest during training. Used as-is on the test window.">Best Stop</th>
       <th title="Total return of the best N/K combination on the training period. Higher is expected — the model was optimized here. Use this to sanity-check, not to evaluate.">Train Return</th>
       <th title="Composite score on the training period: Total Return % × RDR ÷ 100. Used to select the best N/K for that window.">Train Score</th>
       <th title="Number of completed trades fired during the test (out-of-sample) period. Low counts reduce statistical confidence.">Test Trades</th>
@@ -387,13 +522,50 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
 """
 
 
+def _build_hotspot_html(hotspots: list) -> str:
+    """Render hotspot clusters as an HTML section."""
+    if not hotspots:
+        return ''
+    rows = []
+    for i, h in enumerate(hotspots[:5]):   # show top 5 clusters
+        rows.append(
+            f'<tr>'
+            f'<td>{"★ " if i == 0 else ""}Cluster {i+1}</td>'
+            f'<td>{h["peak_score"]:.1f}</td>'
+            f'<td>N={h["peak_n"]}  K={h["peak_k"]:.1f}  Stop={h["peak_stop"]:.0%}</td>'
+            f'<td>N {h["n_range"][0]}–{h["n_range"][1]}</td>'
+            f'<td>K {h["k_range"][0]:.1f}–{h["k_range"][1]:.1f}</td>'
+            f'<td>Stop {h["stop_range"][0]:.0%}–{h["stop_range"][1]:.0%}</td>'
+            f'<td>{h["size"]} cells</td>'
+            f'</tr>'
+        )
+    return f"""
+<div class="hotspot-section">
+  <h2>🔥 Parameter Hotspots — Top Scoring Regions</h2>
+  <p style="font-size:0.82rem;color:#666;margin-bottom:0.6rem;">
+    Connected clusters of top-10% scoring combinations in (N, K, Stop) space.
+    A wide cluster = robust plateau. A narrow cluster = fragile spike. Prefer wide.
+  </p>
+  <div class="table-wrap">
+  <table class="hotspot-table">
+    <thead><tr>
+      <th>Cluster</th><th>Peak Score</th><th>Peak (N, K, Stop)</th>
+      <th>N Range</th><th>K Range</th><th>Stop Range</th><th>Size</th>
+    </tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table>
+  </div>
+</div>"""
+
+
 def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
                run_date: str, data_through: str, params: dict,
-               n_values: list = None, k_values: list = None) -> str:
+               n_values: list = None, k_values: list = None,
+               stop_values: list = None) -> str:
     RDR_THRESHOLD   = params["RDR_THRESHOLD"]
     MIN_TRADES      = params["MIN_TRADES"]
     CAGR_THRESHOLD  = params["CAGR_THRESHOLD"]
-    STOP_PCT_VALUES = [params["StopPct"]]
+    _stop_values    = stop_values if stop_values is not None else STOP_PCT_VALUES
     WF_TRAIN_YEARS  = int(params["WF_TRAIN_YEARS"])
     WF_TEST_YEARS   = int(params["WF_TEST_YEARS"])
     WF_STEP_MONTHS  = int(params["WF_STEP_MONTHS"])
@@ -488,6 +660,17 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   table.heatmap th.hm-corner {{ background: #f0f0f0; font-weight: 600; font-size: 0.7rem; width: 36px; }}
   table.heatmap th.hm-kh {{ background: #f0f0f0; font-weight: 500; }}
   table.heatmap th.hm-nh {{ background: #f0f0f0; font-weight: 500; text-align: center; }}
+  .hm3-tabs {{ display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap; }}
+  .hm3-tab  {{ padding: 0.3rem 0.9rem; border: 1px solid #ccc; border-radius: 4px;
+               background: #f5f5f5; cursor: pointer; font-size: 0.82rem; font-weight: 500; }}
+  .hm3-tab.hm3-active {{ background: #1a7f3c; color: #fff; border-color: #1a7f3c; }}
+  .hm3-tab:hover:not(.hm3-active) {{ background: #e8e8e8; }}
+  .hotspot-section {{ margin-bottom: 2rem; }}
+  .hotspot-section h2 {{ font-size: 1rem; margin-bottom: 0.5rem; }}
+  .hotspot-table {{ border-collapse: collapse; font-size: 0.85rem; width: 100%; margin-bottom: 0.75rem; }}
+  .hotspot-table th {{ background: #f0f0f0; padding: 0.4rem 0.75rem; text-align: left; border-bottom: 2px solid #ddd; }}
+  .hotspot-table td {{ padding: 0.35rem 0.75rem; border-bottom: 1px solid #eee; }}
+  .hotspot-table tr:first-child td {{ font-weight: 600; background: #f0fff4; }}
   .heatmap-legend {{ display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem;
     color: #666; margin-top: 0.4rem; }}
   .heatmap-legend-bar {{ width: 120px; height: 12px; border-radius: 3px;
@@ -520,7 +703,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
     <div><strong>SCORE_DIVISOR</strong> &nbsp;{SCORE_DIVISOR}</div>
     <div><strong>N_VALUES</strong> &nbsp;{N_VALUES[0]}–{N_VALUES[-1]} (every {N_VALUES[1]-N_VALUES[0]})</div>
     <div><strong>K_VALUES</strong> &nbsp;{K_VALUES[0]}–{K_VALUES[-1]} (every {round(K_VALUES[1]-K_VALUES[0],1) if len(K_VALUES) > 1 else "—"})</div>
-    <div><strong>STOP_PCT_VALUES</strong> &nbsp;{", ".join(f"{s:.0%}" for s in STOP_PCT_VALUES)}</div>
+    <div><strong>STOP_PCT_VALUES</strong> &nbsp;{", ".join(f"{s:.0%}" for s in _stop_values)}</div>
     <div><strong>Entry</strong> &nbsp;Close crosses below lower BB</div>
     <div><strong>Take profit</strong> &nbsp;Close crosses upper BB</div>
     <div><strong>Stop loss</strong> &nbsp;Close ≤ entry × (1 − Stop%)</div>
@@ -561,16 +744,18 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
 
 {build_wf_html(wf_windows, WF_TRAIN_YEARS, WF_TEST_YEARS, WF_STEP_MONTHS, CAGR_THRESHOLD, WF_MIN_TRADES)}
 
+{_build_hotspot_html(find_hotspots(df_all, n_values or N_VALUES, k_values or K_VALUES, stop_values or STOP_PCT_VALUES))}
+
 <div class="heatmap-section">
-  <h2>📊 Score Heat Map — N × K</h2>
+  <h2>📊 Score Heat Map — N × K × Stop</h2>
   <p class="heatmap-caption">
     Each cell = composite Score (Total Return % × RDR ÷ {SCORE_DIVISOR}).
-    Gray cells did not meet the RDR ≥ {RDR_THRESHOLD} threshold.
-    {"<strong>No combinations passed all filters.</strong>" if best_score is None else f"<strong>Bold outline = current strategy params (N={best_score['N']:.0f}, K={best_score['K']:.1f})</strong>."}
+    Select a stop % tab to view the N × K slice. Gray cells did not meet the RDR ≥ {RDR_THRESHOLD} threshold.
+    {"Gold border = global best combination across all stops." if best_score is not None else "<strong>No combinations passed all filters.</strong>"}
 
   </p>
   <div class="heatmap-wrap">
-    {build_heatmap(df_all, df, n_values or N_VALUES, k_values or K_VALUES)}
+    {build_heatmap_3d(df_all, df, n_values or N_VALUES, k_values or K_VALUES, stop_values or STOP_PCT_VALUES)}
   </div>
   <div class="heatmap-legend">
     <span>Low score</span>
@@ -674,11 +859,9 @@ def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] GSIT backtester starting")
 
     params         = load_strategy_params()
-    stop_pct       = params["StopPct"]
     RDR_THRESHOLD  = params["RDR_THRESHOLD"]
     MIN_TRADES     = params["MIN_TRADES"]
     CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
-    STOP_PCT_VALUES = [stop_pct]
 
     df_raw = (
         pd.read_csv(DATA_PATH, parse_dates=["Date"])
@@ -692,9 +875,16 @@ def main():
     combos = list(product(N_VALUES, K_VALUES, STOP_PCT_VALUES))
     print(f"  Grid: {len(combos)} combinations  (N={N_VALUES}  K={K_VALUES}  Stop%={[f'{s:.0%}' for s in STOP_PCT_VALUES]})")
 
+    # Precompute SMA+STD once per N value — shared across all K and Stop combinations
+    print("  Precomputing indicators...")
+    ind_cache = {n: bollinger_base(close, n) for n in N_VALUES}
+
     results = []
-    for n, k, sp in combos:
-        r = run(close, n, k, sp, MIN_TRADES)
+    for n, k, stop_pct in combos:
+        sma, std = ind_cache[n]
+        upper    = sma + k * std
+        lower    = sma - k * std
+        r = run(close, n, k, stop_pct, MIN_TRADES, _precomp=(sma, upper, lower))
         if r:
             results.append(r)
 
@@ -714,12 +904,13 @@ def main():
     )
 
     print("  Running walk-forward analysis...")
-    wf_windows = walk_forward(df_raw, params, N_VALUES, K_VALUES)
+    wf_windows = walk_forward(df_raw, params, N_VALUES, K_VALUES, STOP_PCT_VALUES)
     print(f"  Walk-forward: {len(wf_windows)} windows completed")
 
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_{run_date}.html"
-    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params), encoding="utf-8")
+    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params,
+                                   stop_values=STOP_PCT_VALUES), encoding="utf-8")
 
     good_count = (out["RDR"] >= RDR_THRESHOLD).sum()
     best       = out.iloc[0]
@@ -734,6 +925,7 @@ def main():
 
 N_VALUES_KC = list(range(10, 35))                          # Lookback period: [10, 11, ..., 34]
 K_VALUES_KC = [round(k * 0.1, 1) for k in range(10, 26)]  # Band width: [1.0, 1.1, ..., 2.5]
+STOP_PCT_VALUES_KC = [0.20, 0.30, 0.40, 0.50, 0.60]       # Stop loss: [20%, 30%, 40%, 50%, 60%]
 
 
 def keltner(close: pd.Series, high: pd.Series, low: pd.Series, n: int, k: float):
@@ -877,8 +1069,11 @@ def load_kc_params() -> dict:
     }
 
 
-def walk_forward_keltner(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list) -> list:
-    stop_pct      = params["StopPct"]
+def walk_forward_keltner(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list,
+                         stop_values: list = None) -> list:
+    if stop_values is None:
+        stop_values = [params["StopPct"]]
+    stop_pct = stop_values[0]  # KC uses single stop for now (keeps report simple)
     train_years   = int(params["WF_TRAIN_YEARS"])
     test_years    = int(params["WF_TEST_YEARS"])
     step_months   = int(params["WF_STEP_MONTHS"])
@@ -954,12 +1149,10 @@ def main_keltner():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Keltner backtester starting")
 
     params         = load_kc_params()
-    stop_pct       = params["StopPct"]
     RDR_THRESHOLD  = params["RDR_THRESHOLD"]
     MIN_TRADES     = params["MIN_TRADES"]
     CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
     LR_PERIOD      = int(params["LR_PERIOD"])
-    STOP_PCT_VALUES = [stop_pct]
 
     df_raw = (
         pd.read_csv(DATA_PATH, parse_dates=["Date"])
@@ -972,8 +1165,8 @@ def main_keltner():
     data_through = df_raw["Date"].max().strftime("%Y-%m-%d")
     print(f"  Data: {df_raw['Date'].min().date()} → {data_through}  ({len(df_raw):,} days)")
 
-    combos = list(product(N_VALUES_KC, K_VALUES_KC, STOP_PCT_VALUES))
-    print(f"  Grid: {len(combos)} combinations  (N={N_VALUES_KC}  K={K_VALUES_KC}  Stop%={[f'{s:.0%}' for s in STOP_PCT_VALUES]})")
+    combos = list(product(N_VALUES_KC, K_VALUES_KC, STOP_PCT_VALUES_KC))
+    print(f"  Grid: {len(combos)} combinations  (N={N_VALUES_KC}  K={K_VALUES_KC}  Stop%={[f'{s:.0%}' for s in STOP_PCT_VALUES_KC]})")
 
     results = []
     for n, k, sp in combos:
@@ -1003,7 +1196,8 @@ def main_keltner():
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_keltner_{run_date}.html"
     out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params,
-                                   n_values=N_VALUES_KC, k_values=K_VALUES_KC), encoding="utf-8")
+                                   n_values=N_VALUES_KC, k_values=K_VALUES_KC,
+                                   stop_values=STOP_PCT_VALUES_KC), encoding="utf-8")
 
     if len(out) == 0:
         print("  No KC results passed filters.")
