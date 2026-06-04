@@ -386,13 +386,15 @@ def build_heatmap_3d(df_all: pd.DataFrame, df_filtered: pd.DataFrame,
             f'onclick="showStop({si})" id="hm3-btn-{si}">{stop_label}</button>'
         )
 
-        header = '<th class="hm-corner">N \\ K</th>' + ''.join(
-            f'<th class="hm-kh">{k:.1f}</th>' for k in k_sorted
-        )
+        # Transposed layout: K as rows (18), N as columns (39)
+        # N header row with rotated labels to keep columns narrow
+        n_headers = ''.join(f'<th class="hm-nh"><div class="hm-n-lbl">{n}</div></th>' for n in n_sorted)
+        header = f'<th class="hm-corner">K \\ N</th>{n_headers}'
+
         rows = []
-        for n in n_sorted:
-            cells = [f'<th class="hm-nh">{n}</th>']
-            for k in k_sorted:
+        for k in k_sorted:
+            cells = [f'<th class="hm-kh">{k:.1f}</th>']
+            for n in n_sorted:
                 key   = (n, round(k, 1), round(stop_pct, 2))
                 score = score_map.get(key)
                 valid = key in valid_set
@@ -400,8 +402,7 @@ def build_heatmap_3d(df_all: pd.DataFrame, df_filtered: pd.DataFrame,
                 style = cell_color(score if valid else None, is_gb)
                 tip   = (f'N={n} K={k:.1f} Stop={stop_label}&#10;'
                          + (f'Score={score:.1f}' if (score and valid) else 'Below filters'))
-                txt   = f'{score:.0f}' if (score and valid) else '·'
-                cells.append(f'<td style="{style}" title="{tip}">{txt}</td>')
+                cells.append(f'<td style="{style}" title="{tip}"></td>')
             rows.append(f'<tr>{"".join(cells)}</tr>')
 
         display = '' if is_first else ' style="display:none"'
@@ -650,19 +651,25 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   .wf-pass-swatch {{ background: #f0fff4; border: 1px solid #b2dfdb; }}
   .wf-ok-swatch   {{ background: #fffde7; border: 1px solid #ffe082; }}
   .wf-fail-swatch {{ background: #fdf2f2; border: 1px solid #ffcdd2; }}
-  .heatmap-section {{ margin-bottom: 2rem; }}
+  .heatmap-section {{ margin-bottom: 1.5rem; }}
   .heatmap-section h2 {{ font-size: 1rem; margin-bottom: 0.25rem; }}
-  .heatmap-caption {{ font-size: 0.8rem; color: #666; margin-bottom: 0.6rem; }}
+  .heatmap-caption {{ font-size: 0.8rem; color: #666; margin-bottom: 0.5rem; }}
   .heatmap-wrap {{ overflow-x: auto; }}
-  table.heatmap {{ border-collapse: collapse; font-size: 0.72rem; }}
-  table.heatmap td, table.heatmap th {{ width: 36px; height: 28px; text-align: center;
-    padding: 0; border: 1px solid #fff; }}
-  table.heatmap th.hm-corner {{ background: #f0f0f0; font-weight: 600; font-size: 0.7rem; width: 36px; }}
-  table.heatmap th.hm-kh {{ background: #f0f0f0; font-weight: 500; }}
-  table.heatmap th.hm-nh {{ background: #f0f0f0; font-weight: 500; text-align: center; }}
-  .hm3-tabs {{ display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap; }}
-  .hm3-tab  {{ padding: 0.3rem 0.9rem; border: 1px solid #ccc; border-radius: 4px;
-               background: #f5f5f5; cursor: pointer; font-size: 0.82rem; font-weight: 500; }}
+  table.heatmap {{ border-collapse: collapse; font-size: 0.65rem; }}
+  table.heatmap td {{ width: 16px; min-width: 16px; height: 18px; padding: 0;
+    border: 1px solid #fff; cursor: default; }}
+  table.heatmap th {{ padding: 0; border: 1px solid #fff; background: #f0f0f0; }}
+  table.heatmap th.hm-corner {{ font-weight: 600; font-size: 0.65rem; width: 32px;
+    min-width: 32px; height: 44px; vertical-align: bottom; padding: 2px 3px; white-space: nowrap; }}
+  table.heatmap th.hm-kh {{ font-weight: 500; font-size: 0.65rem; width: 32px;
+    min-width: 32px; height: 18px; text-align: right; padding: 0 4px 0 0; white-space: nowrap; }}
+  table.heatmap th.hm-nh {{ width: 16px; min-width: 16px; height: 44px; vertical-align: bottom; }}
+  .hm-n-lbl {{ writing-mode: vertical-rl; transform: rotate(180deg);
+    font-size: 0.6rem; font-weight: 500; line-height: 16px;
+    padding-bottom: 2px; text-align: left; white-space: nowrap; }}
+  .hm3-tabs {{ display: flex; gap: 0.35rem; margin-bottom: 0.5rem; flex-wrap: wrap; }}
+  .hm3-tab  {{ padding: 0.25rem 0.75rem; border: 1px solid #ccc; border-radius: 4px;
+               background: #f5f5f5; cursor: pointer; font-size: 0.8rem; font-weight: 500; }}
   .hm3-tab.hm3-active {{ background: #1a7f3c; color: #fff; border-color: #1a7f3c; }}
   .hm3-tab:hover:not(.hm3-active) {{ background: #e8e8e8; }}
   .hotspot-section {{ margin-bottom: 2rem; }}
