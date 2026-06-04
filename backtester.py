@@ -149,7 +149,7 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
     max_dd     = (peak - bal_series).max()
     max_dd_pct = max_dd / peak.max() * 100
 
-    rdr = round(total_return / max_dd, 2) if max_dd > 0 else 999.0  # cap: no drawdown = excellent but not infinite
+    rdr = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0  # always cap at 999 — floating-point near-zero max_dd can otherwise produce quadrillion scores
 
     return {
         "N":              n,
@@ -832,7 +832,7 @@ def run_keltner(close: pd.Series, high: pd.Series, low: pd.Series,
     max_dd     = (peak - bal_series).max()
     max_dd_pct = max_dd / peak.max() * 100
 
-    rdr = round(total_return / max_dd, 2) if max_dd > 0 else 999.0
+    rdr = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0  # always cap at 999
 
     return {
         "N":              n,
