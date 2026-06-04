@@ -30,7 +30,9 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt, tab_rules = st.tabs(["📈 Visualizer", "⚙️ Backtester", "📋 Strategy Rules"])
+tab_viz, tab_kc_viz, tab_bt, tab_kc_bt, tab_rules = st.tabs([
+    "📈 Bollinger", "📈 Keltner", "⚙️ BB Backtest", "⚙️ KC Backtest", "📋 Strategy Rules"
+])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VISUALIZER TAB
@@ -51,15 +53,15 @@ with tab_viz:
             val = match.group(1)
             return float(val) if "." in val else int(val)
 
-        N        = extract("N")
-        K        = extract("K")
-        StopPct  = extract("StopPct") / 100
+        N         = extract("N")
+        K         = extract("K")
+        StopPct   = extract("StopPct") / 100
         return {"N": N, "K": K, "StopPct": StopPct}
 
-    params   = load_strategy_params()
-    N        = params["N"]
-    K        = params["K"]
-    STOP_PCT = params["StopPct"]
+    params    = load_strategy_params()
+    N         = params["N"]
+    K         = params["K"]
+    STOP_PCT  = params["StopPct"]
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     def compute_bollinger(close: pd.Series, n: int, k: int):
@@ -68,7 +70,6 @@ with tab_viz:
         upper = sma + k * std
         lower = sma - k * std
         return sma, upper, lower
-
 
     def compute_signals(close: pd.Series, upper: pd.Series, lower: pd.Series):
         buy  = (close < lower) & (close.shift(1) >= lower.shift(1))
@@ -452,11 +453,450 @@ with tab_viz:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# BACKTESTER TAB
+# KELTNER CHANNEL VISUALIZER TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_kc_viz:
+
+    # ── Load KC parameters from STRATEGY_RULES.md ────────────────────────────
+    def load_kc_params_viz() -> dict:
+        rules_path = Path(__file__).parent / "STRATEGY_RULES.md"
+        text = rules_path.read_text()
+
+        def extract_kc(symbol: str):
+            pattern = rf"\|\s*`KC_{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+            match = re.search(pattern, text)
+            if not match:
+                st.error(f"❌ Cannot find parameter `KC_{symbol}` in STRATEGY_RULES.md. Please check the file.")
+                st.stop()
+            val = match.group(1)
+            return float(val) if "." in val else int(val)
+
+        N         = extract_kc("N")
+        K         = extract_kc("K")
+        StopPct   = extract_kc("StopPct") / 100
+        LR_PERIOD = extract_kc("LR_PERIOD")
+        return {"N": N, "K": K, "StopPct": StopPct, "LR_PERIOD": LR_PERIOD}
+
+    kc_params    = load_kc_params_viz()
+    KC_N         = kc_params["N"]
+    KC_K         = kc_params["K"]
+    KC_STOP_PCT  = kc_params["StopPct"]
+    KC_LR_PERIOD = kc_params["LR_PERIOD"]
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def compute_keltner(close: pd.Series, high: pd.Series, low: pd.Series, n: int, k: float):
+        ema = close.ewm(span=n, adjust=False).mean()
+        tr  = pd.concat([high - low,
+                         (high - close.shift(1)).abs(),
+                         (low  - close.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(n).mean()
+        return ema, ema + k * atr, ema - k * atr
+
+    def compute_lr_slope_viz(close: pd.Series, period: int) -> pd.Series:
+        import numpy as np
+        x = np.arange(period, dtype=float)
+        x -= x.mean()
+        return close.rolling(period).apply(lambda y: np.dot(x, y) / np.dot(x, x), raw=True)
+
+    def compute_kc_signals(close: pd.Series, upper: pd.Series, lower: pd.Series, lr_period: int):
+        kc_cross = (close < lower) & (close.shift(1) >= lower.shift(1))
+        if lr_period > 0:
+            slope = compute_lr_slope_viz(close, lr_period)
+            buy   = kc_cross & (slope > 0)
+        else:
+            buy   = kc_cross
+        sell = (close > upper) & (close.shift(1) <= upper.shift(1))
+        return buy, sell
+
+    def simulate_kc_portfolio(df: pd.DataFrame, ema: pd.Series, upper_kc: pd.Series, lower_kc: pd.Series,
+                              initial: float, stop_pct: float):
+        balance  = initial
+        in_trade = False
+        entry_price = entry_date = shares = None
+        trades = []
+
+        for i in range(1, len(df)):
+            close        = df["Close"].iloc[i]
+            prev_close   = df["Close"].iloc[i - 1]
+            cur_upper    = upper_kc.iloc[i]
+            cur_lower    = lower_kc.iloc[i]
+            prev_upper   = upper_kc.iloc[i - 1]
+            prev_lower   = lower_kc.iloc[i - 1]
+            date         = df["Date"].iloc[i]
+
+            if pd.isna(cur_upper) or pd.isna(cur_lower) or pd.isna(prev_lower):
+                continue
+
+            if not in_trade:
+                if close < cur_lower and prev_close >= prev_lower:
+                    shares      = balance / close
+                    entry_price = close
+                    entry_date  = date
+                    in_trade    = True
+            else:
+                stop_price = entry_price * (1 - stop_pct)
+                if close > cur_upper and prev_close <= prev_upper:
+                    balance = shares * close
+                    trades.append({
+                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                        "Entry $":     round(entry_price, 2),
+                        "Exit Date":   date.strftime("%Y-%m-%d"),
+                        "Exit $":      round(close, 2),
+                        "Exit Reason": "Take Profit ✅",
+                        "Return %":    round((close / entry_price - 1) * 100, 1),
+                        "Balance $":   round(balance, 2),
+                    })
+                    in_trade = False
+                elif close <= stop_price:
+                    balance = shares * close
+                    trades.append({
+                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                        "Entry $":     round(entry_price, 2),
+                        "Exit Date":   date.strftime("%Y-%m-%d"),
+                        "Exit $":      round(close, 2),
+                        "Exit Reason": "Stop Loss 🛑",
+                        "Return %":    round((close / entry_price - 1) * 100, 1),
+                        "Balance $":   round(balance, 2),
+                    })
+                    in_trade = False
+
+        if in_trade:
+            close   = df["Close"].iloc[-1]
+            balance = shares * close
+            trades.append({
+                "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                "Entry $":     round(entry_price, 2),
+                "Exit Date":   "—",
+                "Exit $":      round(close, 2),
+                "Exit Reason": "Still Open 🟡",
+                "Return %":    round((close / entry_price - 1) * 100, 1),
+                "Balance $":   round(balance, 2),
+            })
+
+        return round(balance, 2), trades
+
+    # ── Load GSIT ─────────────────────────────────────────────────────────────
+    KC_DATA_DIR = Path(__file__).parent / "data"
+    kc_df_full  = pd.read_csv(KC_DATA_DIR / "GSIT_daily_high_low.csv", parse_dates=["Date"])
+    kc_df_full  = kc_df_full.sort_values("Date").reset_index(drop=True)
+
+    kc_global_min = kc_df_full["Date"].min().date()
+    kc_global_max = kc_df_full["Date"].max().date()
+
+    # ── Active strategy parameters (read-only display) ────────────────────────
+    with st.expander("📋 Active KC Strategy Parameters", expanded=False):
+        st.caption("Parameters are defined in `STRATEGY_RULES.md` (KC_ prefixed) and cannot be changed here.")
+        kc_c1, kc_c2, kc_c3 = st.columns(3)
+        kc_c1.metric("KC_N (Lookback)", KC_N)
+        kc_c2.metric("KC_K (ATR ×)", KC_K)
+        kc_c3.metric("KC_LR_PERIOD", KC_LR_PERIOD)
+
+    # ── Date range + signal toggle ─────────────────────────────────────────────
+    with st.expander("⚙️ View Settings", expanded=False):
+        kc_col_a, kc_col_b = st.columns(2)
+        with kc_col_a:
+            kc_start_date = st.date_input("From", value=kc_global_min, min_value=kc_global_min, max_value=kc_global_max, key="kc_start")
+        with kc_col_b:
+            kc_end_date = st.date_input("To", value=kc_global_max, min_value=kc_global_min, max_value=kc_global_max, key="kc_end")
+        kc_show_signals = st.toggle("Show buy/sell signals", value=True, key="kc_signals")
+
+    # ── Filter to date range ───────────────────────────────────────────────────
+    kc_df = kc_df_full[(kc_df_full["Date"].dt.date >= kc_start_date) & (kc_df_full["Date"].dt.date <= kc_end_date)].reset_index(drop=True)
+
+    if kc_df.empty:
+        st.warning("No data in selected date range.")
+        st.stop()
+
+    # ── Compute indicators (full history for accuracy, slice after) ────────────
+    kc_ema_full, kc_upper_full, kc_lower_full = compute_keltner(
+        kc_df_full["Close"], kc_df_full["High"], kc_df_full["Low"], KC_N, KC_K
+    )
+    kc_buy_signals, kc_sell_signals = compute_kc_signals(
+        kc_df_full["Close"], kc_upper_full, kc_lower_full, KC_LR_PERIOD
+    )
+
+    kc_mask         = (kc_df_full["Date"].dt.date >= kc_start_date) & (kc_df_full["Date"].dt.date <= kc_end_date)
+    kc_ema          = kc_ema_full[kc_mask].reset_index(drop=True)
+    kc_upper        = kc_upper_full[kc_mask].reset_index(drop=True)
+    kc_lower        = kc_lower_full[kc_mask].reset_index(drop=True)
+    kc_buy_sig      = kc_buy_signals[kc_mask].reset_index(drop=True)
+    kc_sell_sig     = kc_sell_signals[kc_mask].reset_index(drop=True)
+
+    # ── Main chart ─────────────────────────────────────────────────────────────
+    kc_fig = go.Figure()
+
+    kc_fig.add_trace(go.Candlestick(
+        x=kc_df["Date"],
+        open=kc_df["Open"], high=kc_df["High"], low=kc_df["Low"], close=kc_df["Close"],
+        name="Price",
+        increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
+        decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
+        showlegend=False,
+    ))
+
+    kc_fig.add_trace(go.Scatter(
+        x=kc_df["Date"], y=kc_ema,
+        mode="lines", name=f"EMA({KC_N})",
+        line=dict(color="orange", width=1.5),
+    ))
+
+    kc_fig.add_trace(go.Scatter(
+        x=kc_df["Date"], y=kc_upper,
+        mode="lines", name=f"KC Upper (×{KC_K} ATR)",
+        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+    ))
+
+    kc_fig.add_trace(go.Scatter(
+        x=kc_df["Date"], y=kc_lower,
+        mode="lines", name=f"KC Lower (×{KC_K} ATR)",
+        line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+        fill="tonexty", fillcolor="rgba(150,150,150,0.07)",
+    ))
+
+    if kc_show_signals:
+        kc_fig.add_trace(go.Scatter(
+            x=kc_df["Date"][kc_buy_sig], y=kc_df["Low"][kc_buy_sig] * 0.98,
+            mode="markers", name="Buy",
+            marker=dict(symbol="triangle-up", size=10, color="lime", line=dict(color="green", width=1)),
+        ))
+
+        kc_fig.add_trace(go.Scatter(
+            x=kc_df["Date"][kc_sell_sig], y=kc_df["High"][kc_sell_sig] * 1.02,
+            mode="markers", name="Sell",
+            marker=dict(symbol="triangle-down", size=10, color="red", line=dict(color="darkred", width=1)),
+        ))
+
+    kc_fig.update_layout(
+        xaxis=dict(
+            rangeslider=dict(visible=True, thickness=0.05),
+            type="date", tickformat="%b %Y",
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1,  label="1M", step="month", stepmode="backward"),
+                    dict(count=6,  label="6M", step="month", stepmode="backward"),
+                    dict(count=1,  label="1Y", step="year",  stepmode="backward"),
+                    dict(count=5,  label="5Y", step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ],
+                bgcolor="#f0f0f0", activecolor="#636EFA", font=dict(size=10), y=1.08,
+            ),
+        ),
+        yaxis=dict(tickprefix="$", automargin=True),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=11)),
+        height=520,
+        margin=dict(l=10, r=10, t=60, b=10),
+        dragmode="pan",
+    )
+
+    st.plotly_chart(kc_fig, use_container_width=True)
+
+    # ── Pre-compute trade outcomes (used by navigator + portfolio simulation) ──
+    _, _kc_sim_trades = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, 5000.0, KC_STOP_PCT)
+    _kc_outcome_map   = {t["Entry Date"]: t for t in _kc_sim_trades}
+
+    # ── Signal Navigator ───────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🔍 Signal Navigator")
+
+    _kc_all_signals = []
+    for _d, _p in zip(kc_df["Date"][kc_buy_sig], kc_df["Close"][kc_buy_sig]):
+        _kc_all_signals.append({
+            "type":    "Buy ▲",
+            "date":    _d,
+            "price":   _p,
+            "outcome": _kc_outcome_map.get(_d.strftime("%Y-%m-%d"), {}),
+        })
+    for _d, _p in zip(kc_df["Date"][kc_sell_sig], kc_df["Close"][kc_sell_sig]):
+        _kc_all_signals.append({
+            "type":    "Sell ▼",
+            "date":    _d,
+            "price":   _p,
+            "outcome": {},
+        })
+    _kc_all_signals.sort(key=lambda x: x["date"])
+
+    if not _kc_all_signals:
+        st.info("No signals in the selected date range.")
+    else:
+        if "kc_nav_idx" not in st.session_state:
+            st.session_state.kc_nav_idx = 0
+        st.session_state.kc_nav_idx = min(st.session_state.kc_nav_idx, len(_kc_all_signals) - 1)
+
+        _kc_sig = _kc_all_signals[st.session_state.kc_nav_idx]
+
+        _kc1, _kc2, _kc3 = st.columns([1, 5, 1])
+        with _kc1:
+            if st.button("← Prev", disabled=st.session_state.kc_nav_idx == 0, use_container_width=True, key="kc_prev"):
+                st.session_state.kc_nav_idx -= 1
+                st.rerun()
+        with _kc3:
+            if st.button("Next →", disabled=st.session_state.kc_nav_idx == len(_kc_all_signals) - 1, use_container_width=True, key="kc_next"):
+                st.session_state.kc_nav_idx += 1
+                st.rerun()
+        with _kc2:
+            st.markdown(
+                f"<div style='text-align:center;padding-top:0.35rem'>"
+                f"Signal <strong>{st.session_state.kc_nav_idx + 1}</strong> of <strong>{len(_kc_all_signals)}</strong>"
+                f" &nbsp;·&nbsp; <strong>{_kc_sig['type']}</strong>"
+                f" &nbsp;·&nbsp; {_kc_sig['date'].strftime('%b %d, %Y')}"
+                f" &nbsp;·&nbsp; ${_kc_sig['price']:.2f}"
+                f"</div>", unsafe_allow_html=True
+            )
+
+        _KC_WIN = 30
+        _kc_fi  = kc_df_full[kc_df_full["Date"] == _kc_sig["date"]].index
+        if len(_kc_fi):
+            _kc_fi    = _kc_fi[0]
+            _kc_zs    = max(0, _kc_fi - _KC_WIN)
+            _kc_ze    = min(len(kc_df_full), _kc_fi + _KC_WIN + 1)
+            _kc_zdf   = kc_df_full.iloc[_kc_zs:_kc_ze].reset_index(drop=True)
+            _kc_z_ema    = kc_ema_full.iloc[_kc_zs:_kc_ze].reset_index(drop=True)
+            _kc_z_upper  = kc_upper_full.iloc[_kc_zs:_kc_ze].reset_index(drop=True)
+            _kc_z_lower  = kc_lower_full.iloc[_kc_zs:_kc_ze].reset_index(drop=True)
+
+            _kc_fn = go.Figure()
+            _kc_fn.add_trace(go.Candlestick(
+                x=_kc_zdf["Date"], open=_kc_zdf["Open"], high=_kc_zdf["High"],
+                low=_kc_zdf["Low"], close=_kc_zdf["Close"], name="Price",
+                increasing=dict(line=dict(color="#636EFA"), fillcolor="#636EFA"),
+                decreasing=dict(line=dict(color="#636EFA"), fillcolor="rgba(0,0,0,0)"),
+                showlegend=False,
+            ))
+            _kc_fn.add_trace(go.Scatter(x=_kc_zdf["Date"], y=_kc_z_ema, mode="lines",
+                name=f"EMA({KC_N})", line=dict(color="orange", width=1.5)))
+            _kc_fn.add_trace(go.Scatter(x=_kc_zdf["Date"], y=_kc_z_upper, mode="lines",
+                name="KC Upper", line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot")))
+            _kc_fn.add_trace(go.Scatter(x=_kc_zdf["Date"], y=_kc_z_lower, mode="lines",
+                name="KC Lower", line=dict(color="rgba(150,150,150,0.6)", width=1, dash="dot"),
+                fill="tonexty", fillcolor="rgba(150,150,150,0.07)"))
+
+            _kc_is_buy = "Buy" in _kc_sig["type"]
+            _kc_fn.add_trace(go.Scatter(
+                x=[_kc_sig["date"]], y=[_kc_sig["price"] * (0.97 if _kc_is_buy else 1.03)],
+                mode="markers", showlegend=False,
+                marker=dict(
+                    symbol="triangle-up" if _kc_is_buy else "triangle-down",
+                    size=14, color="lime" if _kc_is_buy else "red",
+                    line=dict(color="green" if _kc_is_buy else "darkred", width=1.5),
+                ),
+            ))
+
+            _kc_fn.add_vline(x=_kc_sig["date"], line_dash="dash",
+                             line_color="rgba(100,100,100,0.35)", line_width=1)
+
+            if _kc_is_buy:
+                _kc_stop_px = _kc_sig["price"] * (1 - KC_STOP_PCT)
+                _kc_fn.add_hline(y=_kc_stop_px, line_dash="dot",
+                                 line_color="rgba(220,50,50,0.5)", line_width=1.5,
+                                 annotation_text=f"Stop ${_kc_stop_px:.2f}",
+                                 annotation_position="bottom right",
+                                 annotation_font_size=10)
+                _kc_oc = _kc_sig["outcome"]
+                if _kc_oc and _kc_oc.get("Exit Date") and _kc_oc["Exit Date"] != "—":
+                    _kc_exit_dt  = pd.to_datetime(_kc_oc["Exit Date"])
+                    _kc_exit_px  = _kc_oc["Exit $"]
+                    _kc_is_tp    = _kc_oc["Exit Reason"] == "Take Profit ✅"
+                    _kc_ex_color = "rgba(0,160,0,0.45)" if _kc_is_tp else "rgba(200,0,0,0.45)"
+                    _kc_fn.add_vline(x=_kc_exit_dt, line_dash="dot",
+                                     line_color=_kc_ex_color, line_width=1.5)
+                    _kc_fn.add_annotation(
+                        x=_kc_exit_dt, y=_kc_exit_px,
+                        text=f"{'TP' if _kc_is_tp else 'SL'} ${_kc_exit_px:.2f}",
+                        showarrow=True, arrowhead=2, arrowsize=1,
+                        font=dict(size=10, color="green" if _kc_is_tp else "red"),
+                        arrowcolor="green" if _kc_is_tp else "red",
+                        bgcolor="rgba(255,255,255,0.8)",
+                    )
+
+            _kc_fn.update_layout(
+                xaxis=dict(type="date", tickformat="%b %d", rangeslider=dict(visible=False)),
+                yaxis=dict(tickprefix="$", automargin=True),
+                hovermode="x unified",
+                height=360,
+                margin=dict(l=10, r=10, t=30, b=10),
+                dragmode="pan",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, font=dict(size=10)),
+            )
+            st.plotly_chart(_kc_fn, use_container_width=True)
+
+            if _kc_is_buy:
+                _kc_oc   = _kc_sig["outcome"]
+                _kc_upper_at = kc_upper_full.iloc[_kc_fi]
+                _kc_i1, _kc_i2, _kc_i3, _kc_i4, _kc_i5 = st.columns(5)
+                _kc_i1.metric("Entry Price",            f"${_kc_sig['price']:.2f}")
+                _kc_i2.metric("Stop Loss",              f"${_kc_sig['price'] * (1 - KC_STOP_PCT):.2f}")
+                _kc_i3.metric("Take Profit (KC Upper)", f"${_kc_upper_at:.2f}" if not pd.isna(_kc_upper_at) else "—")
+                _kc_i4.metric("Exit Price",             f"${_kc_oc['Exit $']:.2f}"     if _kc_oc else "—")
+                _kc_i5.metric("Return",                 f"{_kc_oc['Return %']:+.1f}%"  if _kc_oc else "—",
+                              delta=f"{_kc_oc['Exit Reason']}" if _kc_oc else None,
+                              delta_color="normal" if _kc_oc and "✅" in _kc_oc.get("Exit Reason","") else "inverse")
+            else:
+                _kc_i1, _kc_i2 = st.columns(2)
+                _kc_i1.metric("Signal Price", f"${_kc_sig['price']:.2f}")
+                _kc_i2.metric("Date",         _kc_sig["date"].strftime("%B %d, %Y"))
+
+    st.divider()
+
+    # ── Summary stats ──────────────────────────────────────────────────────────
+    kc_col1, kc_col2 = st.columns(2)
+    kc_col1.metric("All-Time High",   f"${kc_df['High'].max():.2f}")
+    kc_col2.metric("All-Time Low",    f"${kc_df['Low'].min():.2f}")
+    kc_col1.metric("Avg Daily Range", f"${(kc_df['High'] - kc_df['Low']).mean():.2f}")
+    kc_latest = kc_df.iloc[-1]
+    kc_delta  = kc_latest["Close"] - kc_latest["Open"]
+    kc_col2.metric("Latest Close",    f"${kc_latest['Close']:.2f}", f"{kc_delta:+.2f}")
+
+    if kc_show_signals:
+        st.caption(f"Signals in range: {kc_buy_sig.sum()} buy ▲  ·  {kc_sell_sig.sum()} sell ▼")
+
+    st.caption(f"{len(kc_df):,} trading days · {kc_df['Date'].iloc[0].date()} → {kc_df['Date'].iloc[-1].date()}")
+
+    # ── Portfolio simulation ───────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 💰 Portfolio Simulation")
+    st.caption(f"Buys on KC lower crossover · Exits at KC upper (take profit) or −{int(KC_STOP_PCT*100)}% (stop loss) · Full balance reinvested each trade")
+
+    kc_initial_investment = st.number_input(
+        "Initial investment ($)",
+        min_value=1.0, value=5000.0, step=100.0, format="%.2f",
+        key="kc_initial"
+    )
+
+    kc_final_balance, kc_trades = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, kc_initial_investment, KC_STOP_PCT)
+
+    if not kc_trades:
+        st.info("No completed trades in the selected date range.")
+    else:
+        kc_total_return_pct = (kc_final_balance / kc_initial_investment - 1) * 100
+        kc_closed = [t for t in kc_trades if t["Exit Reason"] != "Still Open 🟡"]
+        kc_wins   = [t for t in kc_closed if t["Return %"] > 0]
+
+        kc_m1, kc_m2, kc_m3, kc_m4 = st.columns(4)
+        kc_m1.metric("Final Balance",  f"${kc_final_balance:,.2f}")
+        kc_m2.metric("Total Return",   f"{kc_total_return_pct:+.1f}%")
+        kc_m3.metric("Trades",         len(kc_trades))
+        kc_m4.metric("Win Rate",       f"{len(kc_wins)/len(kc_closed)*100:.0f}%" if kc_closed else "—")
+
+        kc_trade_df = pd.DataFrame(kc_trades)
+        kc_trade_df.insert(0, "#", range(1, len(kc_trade_df) + 1))
+        st.dataframe(kc_trade_df, use_container_width=True, hide_index=True)
+
+    # ── Footer ─────────────────────────────────────────────────────────────────
+    kc_most_recent = kc_df_full["Date"].max().strftime("%B %d, %Y")
+    st.caption(f"Data source: Yahoo Finance · Most recent data: {kc_most_recent} · Updates daily at 6pm ET on weekdays")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BB BACKTESTER TAB
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_bt:
     REPORTS_DIR = Path(__file__).parent / "reports"
-    reports = sorted(REPORTS_DIR.glob("backtest_*.html"), reverse=True)
+    reports = sorted(
+        [r for r in REPORTS_DIR.glob("backtest_*.html") if "keltner" not in r.name],
+        reverse=True
+    )
 
     if not reports:
         st.info("No backtest report found. Run `python backtester.py` locally to generate one.")
@@ -474,6 +914,25 @@ with tab_bt:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# KC BACKTESTER TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_kc_bt:
+    KC_REPORTS_DIR = Path(__file__).parent / "reports"
+    kc_reports = sorted(KC_REPORTS_DIR.glob("backtest_keltner_*.html"), reverse=True)
+    if not kc_reports:
+        st.info("No Keltner backtest report found. Run `python backtester.py` to generate one.")
+    else:
+        latest = kc_reports[0]
+        st.markdown(f"**Report:** `{latest.name}`")
+        if len(kc_reports) > 1:
+            names = [r.name for r in kc_reports]
+            chosen = st.selectbox("Load a different KC report:", names, index=0)
+            latest = KC_REPORTS_DIR / chosen
+        html_content = latest.read_text(encoding="utf-8")
+        components.html(html_content, height=2400, scrolling=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STRATEGY RULES TAB
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_rules:
@@ -484,14 +943,16 @@ with tab_rules:
     else:
         _rt = RULES_PATH.read_text()
 
-        def _val(symbol: str, pct: bool = False) -> str:
-            pattern = rf"\|\s*`{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+        def _val(symbol: str, pct: bool = False, prefix: str = "") -> str:
+            full = f"{prefix}{symbol}" if prefix else symbol
+            pattern = rf"\|\s*`{full}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
             m = re.search(pattern, _rt)
             if not m:
                 return "—"
             v = m.group(1)
             return f"**{v}%**" if pct else f"**{v}**"
 
+        st.markdown("## 📊 Bollinger Band Strategy")
         st.markdown(f"""
 **Strategy Inputs**
 
@@ -519,7 +980,7 @@ with tab_rules:
 | `WF_STEP_MONTHS` | {_val("WF_STEP_MONTHS")} | Slide step (months) |
 | `WF_MIN_TRADES` | {_val("WF_MIN_TRADES")} | Min trades required per training window |
 
-**Hardcoded in backtester only (not in Strategy Rules)**
+**Hardcoded in backtester only**
 
 | Variable | Value |
 |----------|-------|
@@ -527,4 +988,40 @@ with tab_rules:
 | `SCORE_DIVISOR` | 100 |
 | `N_VALUES` | 16–54 |
 | `K_VALUES` | 1.5–3.2 |
+""")
+
+        st.divider()
+
+        st.markdown("## ⚡ Keltner Channel Strategy")
+        st.markdown(f"""
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `KC_N` | {_val("N", prefix="KC_")} | EMA/ATR lookback (days) |
+| `KC_K` | {_val("K", prefix="KC_")} | ATR multiplier |
+| `KC_StopPct` | {_val("StopPct", pct=True, prefix="KC_")} | Stop loss threshold |
+| `KC_LR_PERIOD` | {_val("LR_PERIOD", prefix="KC_")} | Trend filter lookback (0 = disabled) |
+
+**Filters / Validation**
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `KC_RDR_THRESHOLD` | {_val("RDR_THRESHOLD", prefix="KC_")} | Minimum RDR |
+| `KC_MIN_TRADES` | {_val("MIN_TRADES", prefix="KC_")} | Min completed trades |
+| `KC_CAGR_THRESHOLD` | {_val("CAGR_THRESHOLD", pct=True, prefix="KC_")} | Min annualized return |
+
+**Walk-Forward**
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `KC_WF_TRAIN_YEARS` | {_val("WF_TRAIN_YEARS", prefix="KC_")} | Training window (years) |
+| `KC_WF_TEST_YEARS` | {_val("WF_TEST_YEARS", prefix="KC_")} | Test window (years) |
+| `KC_WF_STEP_MONTHS` | {_val("WF_STEP_MONTHS", prefix="KC_")} | Step (months) |
+| `KC_WF_MIN_TRADES` | {_val("WF_MIN_TRADES", prefix="KC_")} | Min trades per WF window |
+
+**Hardcoded in backtester only**
+
+| Variable | Value |
+|----------|-------|
+| `KC N_VALUES` | 10–34 |
+| `KC K_VALUES` | 1.0–2.5 |
 """)

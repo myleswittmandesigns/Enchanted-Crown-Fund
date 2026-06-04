@@ -171,10 +171,10 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
 
 # ── Walk-forward analysis ─────────────────────────────────────────────────────
 def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list) -> list:
-    stop_pct     = params["StopPct"]
-    train_years  = int(params["WF_TRAIN_YEARS"])
-    test_years   = int(params["WF_TEST_YEARS"])
-    step_months  = int(params["WF_STEP_MONTHS"])
+    stop_pct      = params["StopPct"]
+    train_years   = int(params["WF_TRAIN_YEARS"])
+    test_years    = int(params["WF_TEST_YEARS"])
+    step_months   = int(params["WF_STEP_MONTHS"])
     wf_min_trades = int(params["WF_MIN_TRADES"])
     dates        = df_raw["Date"]
     close        = df_raw["Close"]
@@ -724,5 +724,295 @@ def main():
     print(f"  Report: {out_path}")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# KELTNER CHANNEL STRATEGY
+# ══════════════════════════════════════════════════════════════════════════════
+
+N_VALUES_KC = list(range(10, 35))                          # Lookback period: [10, 11, ..., 34]
+K_VALUES_KC = [round(k * 0.1, 1) for k in range(10, 26)]  # Band width: [1.0, 1.1, ..., 2.5]
+
+
+def keltner(close: pd.Series, high: pd.Series, low: pd.Series, n: int, k: float):
+    ema = close.ewm(span=n, adjust=False).mean()
+    tr  = pd.concat([high - low,
+                     (high - close.shift(1)).abs(),
+                     (low  - close.shift(1)).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(n).mean()
+    return ema, ema + k * atr, ema - k * atr
+
+
+def lr_slope(close: pd.Series, period: int) -> pd.Series:
+    """Rolling linear regression slope over `period` days.
+    Positive = uptrend, negative = downtrend."""
+    import numpy as np
+    x = np.arange(period, dtype=float)
+    x -= x.mean()  # centre x to improve numerical stability
+    def _slope(y):
+        return np.dot(x, y) / np.dot(x, x)
+    return close.rolling(period).apply(_slope, raw=True)
+
+
+def run_keltner(close: pd.Series, high: pd.Series, low: pd.Series,
+                n: int, k: float, stop_pct: float, min_trades: int,
+                entry_from_idx: int = 0, lr_period: int = 0) -> dict | None:
+    ema, upper, lower = keltner(close, high, low, n, k)
+    kc_cross = (close < lower) & (close.shift(1) >= lower.shift(1))
+    if lr_period > 0:
+        slope = lr_slope(close, lr_period)
+        buy = kc_cross & (slope > 0)
+    else:
+        buy = kc_cross
+
+    trades = []
+    in_trade    = False
+    entry_price = None
+    entry_idx   = None
+
+    for i in range(max(n, entry_from_idx), len(close)):
+        if not in_trade:
+            if buy.iloc[i]:
+                in_trade    = True
+                entry_price = close.iloc[i]
+                entry_idx   = i
+        else:
+            c = close.iloc[i]
+            # Take profit: close crosses above upper Keltner Band
+            if c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]:
+                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "tp"})
+                in_trade = False
+            elif c <= entry_price * (1 - stop_pct):
+                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "sl"})
+                in_trade = False
+
+    if len(trades) < min_trades:
+        return None
+
+    # Compounding model: full portfolio balance reinvested each trade
+    balance       = INITIAL_CAPITAL
+    balances      = [INITIAL_CAPITAL]
+    trade_rets    = []
+    wins_count    = 0
+    win_pnls      = []
+    loss_pnls     = []
+    stop_hits     = 0
+
+    for trade in trades:
+        shares      = balance / trade["entry"]
+        new_balance = shares * trade["exit"]
+        pnl         = new_balance - balance
+        ret_pct     = (trade["exit"] - trade["entry"]) / trade["entry"] * 100
+
+        trade_rets.append(ret_pct)
+        if pnl > 0:
+            wins_count += 1
+            win_pnls.append(pnl)
+        else:
+            loss_pnls.append(pnl)
+        if trade["reason"] == "sl":
+            stop_hits += 1
+
+        balance = new_balance
+        balances.append(balance)
+
+    t             = pd.DataFrame(trades)
+    num_trades    = len(trades)
+    win_rate      = wins_count / num_trades * 100
+    avg_win       = sum(win_pnls)  / len(win_pnls)  if win_pnls  else 0.0
+    avg_loss      = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
+    avg_ret_pct   = sum(trade_rets) / len(trade_rets)
+    avg_hold      = t["hold"].mean()
+    final_balance = balance
+    total_return  = final_balance - INITIAL_CAPITAL
+    total_ret_pct = total_return / INITIAL_CAPITAL * 100
+
+    # Max drawdown on portfolio value curve
+    bal_series = pd.Series(balances)
+    peak       = bal_series.cummax()
+    max_dd     = (peak - bal_series).max()
+    max_dd_pct = max_dd / peak.max() * 100
+
+    rdr = round(total_return / max_dd, 2) if max_dd > 0 else 999.0
+
+    return {
+        "N":              n,
+        "K":              k,
+        "Stop %":         stop_pct,
+        "Trades":         num_trades,
+        "Stop Hits":      int(stop_hits),
+        "Win %":          round(win_rate, 1),
+        "Avg Hold Days":  round(avg_hold, 1),
+        "Final Balance $":round(final_balance, 2),
+        "Total Return $": round(total_return, 2),
+        "Total Return %": round(total_ret_pct, 2),
+        "Max Drawdown $": round(max_dd, 2),
+        "Max Drawdown %": round(max_dd_pct, 2),
+        "RDR":            rdr,
+        "Score":          round(total_ret_pct * rdr / SCORE_DIVISOR, 1),
+    }
+
+
+def load_kc_params() -> dict:
+    text = RULES_PATH.read_text()
+
+    def extract(symbol: str):
+        pattern = rf"\|\s*`KC_{symbol}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+        match = re.search(pattern, text)
+        if not match:
+            raise ValueError(f"Cannot find parameter `KC_{symbol}` in STRATEGY_RULES.md")
+        val = match.group(1)
+        return float(val) if "." in val else int(val)
+
+    return {
+        "StopPct":         extract("StopPct") / 100,
+        "RDR_THRESHOLD":   extract("RDR_THRESHOLD"),
+        "MIN_TRADES":      extract("MIN_TRADES"),
+        "CAGR_THRESHOLD":  extract("CAGR_THRESHOLD"),
+        "WF_TRAIN_YEARS":  extract("WF_TRAIN_YEARS"),
+        "WF_TEST_YEARS":   extract("WF_TEST_YEARS"),
+        "WF_STEP_MONTHS":  extract("WF_STEP_MONTHS"),
+        "WF_MIN_TRADES":   extract("WF_MIN_TRADES"),
+        "LR_PERIOD":       extract("LR_PERIOD"),
+    }
+
+
+def walk_forward_keltner(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: list) -> list:
+    stop_pct      = params["StopPct"]
+    train_years   = int(params["WF_TRAIN_YEARS"])
+    test_years    = int(params["WF_TEST_YEARS"])
+    step_months   = int(params["WF_STEP_MONTHS"])
+    wf_min_trades = int(params["WF_MIN_TRADES"])
+    lr_period     = int(params["LR_PERIOD"])
+    dates        = df_raw["Date"]
+    close        = df_raw["Close"]
+    high         = df_raw["High"]
+    low          = df_raw["Low"]
+    windows      = []
+    t            = dates.min()
+
+    while True:
+        train_end_date = t + pd.DateOffset(years=train_years)
+        test_end_date  = train_end_date + pd.DateOffset(years=test_years)
+        if test_end_date > dates.max():
+            break
+
+        te_mask = dates >= train_end_date
+        xt_mask = dates >= test_end_date
+        if not te_mask.any() or not xt_mask.any():
+            break
+        train_end_idx = int(df_raw[te_mask].index[0])
+        test_end_idx  = int(df_raw[xt_mask].index[0])
+
+        best_score  = -1
+        best_n, best_k = n_values[0], k_values[0]
+        best_train  = None
+        for n in n_values:
+            for k in k_values:
+                r = run_keltner(close.iloc[:train_end_idx], high.iloc[:train_end_idx],
+                                low.iloc[:train_end_idx], n, k, stop_pct, wf_min_trades,
+                                lr_period=lr_period)
+                if r and r["Score"] > best_score:
+                    best_score = r["Score"]
+                    best_n, best_k = n, k
+                    best_train = r
+
+        test_r = run_keltner(close.iloc[:test_end_idx], high.iloc[:test_end_idx],
+                             low.iloc[:test_end_idx], best_n, best_k, stop_pct, 1,
+                             entry_from_idx=train_end_idx, lr_period=lr_period)
+
+        test_span_yrs = (dates.iloc[test_end_idx - 1] - dates.iloc[train_end_idx]).days / 365.25
+        if test_r and test_span_yrs > 0:
+            test_cagr = round(
+                ((test_r["Final Balance $"] / INITIAL_CAPITAL) ** (1 / test_span_yrs) - 1) * 100, 1
+            )
+        else:
+            test_cagr = None
+
+        windows.append({
+            "Window":         len(windows) + 1,
+            "Train Start":    t.strftime("%Y-%m"),
+            "Train End":      train_end_date.strftime("%Y-%m"),
+            "Test Start":     train_end_date.strftime("%Y-%m"),
+            "Test End":       test_end_date.strftime("%Y-%m"),
+            "Best N":         best_n,
+            "Best K":         round(best_k, 1),
+            "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
+            "Train Score":    round(best_train["Score"], 1)          if best_train else None,
+            "Test Trades":    test_r["Trades"]                        if test_r    else 0,
+            "Test Return %":  round(test_r["Total Return %"], 1)      if test_r    else None,
+            "Test CAGR %":    test_cagr,
+        })
+
+        t = t + pd.DateOffset(months=step_months)
+
+    return windows
+
+
+def main_keltner():
+    run_date = datetime.today().strftime("%Y-%m-%d")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Keltner backtester starting")
+
+    params         = load_kc_params()
+    stop_pct       = params["StopPct"]
+    RDR_THRESHOLD  = params["RDR_THRESHOLD"]
+    MIN_TRADES     = params["MIN_TRADES"]
+    CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
+    LR_PERIOD      = int(params["LR_PERIOD"])
+    STOP_PCT_VALUES = [stop_pct]
+
+    df_raw = (
+        pd.read_csv(DATA_PATH, parse_dates=["Date"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    close        = df_raw["Close"]
+    high         = df_raw["High"]
+    low          = df_raw["Low"]
+    data_through = df_raw["Date"].max().strftime("%Y-%m-%d")
+    print(f"  Data: {df_raw['Date'].min().date()} → {data_through}  ({len(df_raw):,} days)")
+
+    combos = list(product(N_VALUES_KC, K_VALUES_KC, STOP_PCT_VALUES))
+    print(f"  Grid: {len(combos)} combinations  (N={N_VALUES_KC}  K={K_VALUES_KC}  Stop%={[f'{s:.0%}' for s in STOP_PCT_VALUES]})")
+
+    results = []
+    for n, k, sp in combos:
+        r = run_keltner(close, high, low, n, k, sp, MIN_TRADES, lr_period=LR_PERIOD)
+        if r:
+            results.append(r)
+
+    if not results:
+        print("  No valid KC results — widening the parameter grid may help.")
+        return
+
+    years  = (df_raw["Date"].max() - df_raw["Date"].min()).days / 365.25
+    df_all = pd.DataFrame(results)
+    df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
+    df_all["CAGR %"] = df_all["CAGR %"].round(1)
+    out = (
+        df_all
+        .query("RDR >= @RDR_THRESHOLD and `CAGR %` >= @CAGR_THRESHOLD")
+        .sort_values("Score", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    print("  Running Keltner walk-forward analysis...")
+    wf_windows = walk_forward_keltner(df_raw, params, N_VALUES_KC, K_VALUES_KC)
+    print(f"  Walk-forward: {len(wf_windows)} windows completed")
+
+    OUT_DIR.mkdir(exist_ok=True)
+    out_path = OUT_DIR / f"backtest_keltner_{run_date}.html"
+    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params), encoding="utf-8")
+
+    if len(out) == 0:
+        print("  No KC results passed filters.")
+        return
+
+    good_count = (out["RDR"] >= RDR_THRESHOLD).sum()
+    best       = out.iloc[0]
+    print(f"  Valid KC results: {len(out)}  |  RDR ≥ {RDR_THRESHOLD}: {good_count}")
+    print(f"  Top KC result: N={int(best['N'])} K={best['K']} Stop={best['Stop %']:.0%}  →  RDR={best['RDR']:.2f}  Final=${best['Final Balance $']:,.2f}  Return={best['Total Return %']:.1f}%  (initial: ${INITIAL_CAPITAL:,})")
+    print(f"  Report: {out_path}")
+
+
 if __name__ == "__main__":
     main()
+    main_keltner()

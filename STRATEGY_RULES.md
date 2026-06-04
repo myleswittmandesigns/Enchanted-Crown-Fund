@@ -98,7 +98,7 @@ All of the following must be true:
 | `Lower Band(t)` | μ(N) − K × σ(N) calculated on today's N-day window |
 | `Lower Band(t-1)` | μ(N) − K × σ(N) calculated on yesterday's N-day window |
 
-This fires only on the **first day** price crosses below the lower Bollinger Band. It does not repeat while price remains below the band.
+This fires only on the **first day** price crosses below the lower Bollinger Band.
 
 ### Sell Signal ▼
 All of the following must be true:
@@ -292,3 +292,74 @@ The following factors are **not yet incorporated** into signal logic:
 | 1.9 | 2026-06-03 | Added Portfolio Model, Scoring, and population std (ddof=0) rule to Bollinger Bands section. |
 | 2.0 | 2026-06-03 | Updated params to backtester optimum: N=51, K=2.0. Changed take-profit to Close crosses upper BB. Raised MIN_TRADES to 10. |
 | 2.1 | 2026-06-04 | Testing N=47, K=2.0. |
+| 2.2 | 2026-06-04 | Reverted LR slope filter from BB strategy. Added Keltner Channel strategy section. |
+
+---
+
+## ⚡ Keltner Channel Strategy
+
+### Overview
+Same mean reversion concept as Bollinger Bands, but uses EMA (exponential moving average) as the middle line and ATR (Average True Range) as the volatility measure instead of standard deviation. Includes a linear regression slope trend filter — only takes buy signals when the medium-term trend is pointing up.
+
+### Inputs
+
+| Parameter | Symbol | Default | Description |
+|-----------|--------|---------|-------------|
+| Lookback period | `KC_N` | **20** | EMA and ATR window (trading days) |
+| ATR multiplier | `KC_K` | **1.5** | Band width in ATR units |
+| Stop loss threshold | `KC_StopPct` | **46%** | Exit if close falls ≥ 46% below entry |
+| Trend filter period | `KC_LR_PERIOD` | **50** | Linear regression slope lookback (days). Set to 0 to disable. |
+
+### Indicator Definitions
+
+**EMA (Exponential Moving Average)**
+```
+EMA(t) = α × C(t) + (1 − α) × EMA(t−1)     where α = 2 / (KC_N + 1)
+```
+Weights recent prices more heavily than SMA.
+
+**ATR (Average True Range)**
+```
+TR(t)       = max( H(t)−L(t),  |H(t)−C(t−1)|,  |L(t)−C(t−1)| )
+ATR(KC_N)   = rolling mean of TR over KC_N days
+Upper Band  = EMA + KC_K × ATR
+Lower Band  = EMA − KC_K × ATR
+```
+
+**Linear Regression Slope**
+```
+Fit least-squares line to last KC_LR_PERIOD closing prices
+LR_Slope > 0  →  uptrend  →  buy signals allowed
+LR_Slope ≤ 0  →  downtrend →  buy signals suppressed
+```
+
+### Signal Rules
+
+**Buy Signal ▲** — all must be true:
+```
+1. C(t)   < Lower Band(t)
+2. C(t-1) ≥ Lower Band(t-1)
+3. LR_Slope(t) > 0   (omit if KC_LR_PERIOD = 0)
+```
+
+**Sell Signal ▼:**
+```
+1. C(t)   > Upper Band(t)
+2. C(t-1) ≤ Upper Band(t-1)
+```
+
+### Exit Rules
+- **Take profit:** Close crosses above upper Keltner Band
+- **Stop loss:** Close ≤ entry × (1 − KC_StopPct)
+
+### Validation Rules
+
+| Parameter | Symbol | Value | Description |
+|-----------|--------|-------|-------------|
+| Min RDR | `KC_RDR_THRESHOLD` | **5** | Minimum Return-to-Drawdown Ratio |
+| Min trades | `KC_MIN_TRADES` | **10** | Minimum completed trades |
+| Min CAGR | `KC_CAGR_THRESHOLD` | **20%** | Minimum annualized return |
+| WF train window | `KC_WF_TRAIN_YEARS` | **3** | Walk-forward training window (years) |
+| WF test window | `KC_WF_TEST_YEARS` | **1** | Walk-forward test window (years) |
+| WF step | `KC_WF_STEP_MONTHS` | **6** | Walk-forward step (months) |
+| WF min trades | `KC_WF_MIN_TRADES` | **3** | Min trades per WF training window |
