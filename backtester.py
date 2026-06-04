@@ -390,7 +390,8 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
 
 
 def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
-               run_date: str, data_through: str, params: dict) -> str:
+               run_date: str, data_through: str, params: dict,
+               n_values: list = None, k_values: list = None) -> str:
     RDR_THRESHOLD   = params["RDR_THRESHOLD"]
     MIN_TRADES      = params["MIN_TRADES"]
     CAGR_THRESHOLD  = params["CAGR_THRESHOLD"]
@@ -566,7 +567,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
     <strong>Bold outline = current strategy params (N={best_score["N"]:.0f}, K={best_score["K"]:.1f})</strong>.
   </p>
   <div class="heatmap-wrap">
-    {build_heatmap(df_all, df, N_VALUES, K_VALUES)}
+    {build_heatmap(df_all, df, n_values or N_VALUES, k_values or K_VALUES)}
   </div>
   <div class="heatmap-legend">
     <span>Low score</span>
@@ -1000,7 +1001,8 @@ def main_keltner():
 
     OUT_DIR.mkdir(exist_ok=True)
     out_path = OUT_DIR / f"backtest_keltner_{run_date}.html"
-    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params), encoding="utf-8")
+    out_path.write_text(build_html(out, df_all, wf_windows, run_date, data_through, params,
+                                   n_values=N_VALUES_KC, k_values=K_VALUES_KC), encoding="utf-8")
 
     if len(out) == 0:
         print("  No KC results passed filters.")
