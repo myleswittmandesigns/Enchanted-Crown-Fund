@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas
+        run: pip install massive pandas
 
       - name: Configure git
         run: |
@@ -27,6 +27,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Run update
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: python update_data.py 2>&1 | tee /tmp/update_output.txt
 
       - name: Run backtester
@@ -38,4 +40,3 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "chore: daily data + backtest report update [skip ci]"
           git push
-

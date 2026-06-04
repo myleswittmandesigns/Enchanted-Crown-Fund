@@ -1,4 +1,4 @@
-yfinance
+massive
 pandas
 streamlit
 plotly

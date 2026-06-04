@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Update ticker OHLC CSVs with the latest data from Yahoo Finance.
+Update ticker OHLC CSVs with the latest data from the Massive API (formerly Polygon.io).
 Reads each CSV, finds the last date, fetches new rows, appends, and commits to git.
 """
 
@@ -9,12 +9,22 @@ import subprocess
 from datetime import datetime, timedelta
 
 import pandas as pd
-import yfinance as yf
+from massive import RESTClient
 
-REPO_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(REPO_DIR, "data")
-TICKERS = ["GSIT"]
-COLUMNS = ["Open", "High", "Low", "Close"]
+REPO_DIR  = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR  = os.path.join(REPO_DIR, "data")
+TICKERS   = ["GSIT"]
+COLUMNS   = ["Date", "Open", "High", "Low", "Close", "Volume"]
+
+
+def get_client() -> RESTClient:
+    api_key = os.environ.get("MASSIVE_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "MASSIVE_API_KEY environment variable is not set. "
+            "Add it to your GitHub Actions secrets or local environment."
+        )
+    return RESTClient(api_key=api_key)
 
 
 def git(args: list[str]) -> str:
@@ -27,63 +37,91 @@ def git(args: list[str]) -> str:
     return result.stdout.strip()
 
 
-def update_ticker(ticker: str) -> int:
+def update_ticker(client: RESTClient, ticker: str) -> int:
     path = os.path.join(DATA_DIR, f"{ticker}_daily_high_low.csv")
 
-    existing = pd.read_csv(path, parse_dates=["Date"], index_col="Date")
-    last_date = existing.index.max()
-    fetch_from = last_date + timedelta(days=1)
-    today = datetime.today()
+    existing      = pd.read_csv(path, parse_dates=["Date"])
+    existing       = existing.sort_values("Date").reset_index(drop=True)
+    last_date      = existing["Date"].max()
+    fetch_from     = last_date + timedelta(days=1)
+    today          = datetime.today()
 
     if fetch_from.date() >= today.date():
         print(f"  {ticker}: already up to date (last row: {last_date.date()})")
         return 0
 
-    print(f"  {ticker}: fetching {fetch_from.date()} → {today.date()} ...")
-    df = yf.download(
-        ticker,
-        start=fetch_from.strftime("%Y-%m-%d"),
-        end=today.strftime("%Y-%m-%d"),
-        auto_adjust=True,
-        progress=False,
-    )
+    from_str = fetch_from.strftime("%Y-%m-%d")
+    to_str   = today.strftime("%Y-%m-%d")
+    print(f"  {ticker}: fetching {from_str} → {to_str} ...")
 
-    if df.empty:
+    aggs = []
+    for a in client.list_aggs(
+        ticker     = ticker,
+        multiplier = 1,
+        timespan   = "day",
+        from_      = from_str,
+        to         = to_str,
+        limit      = 50000,
+        adjusted   = True,
+    ):
+        aggs.append(a)
+
+    if not aggs:
         print(f"  {ticker}: no new data returned")
         return 0
 
-    df.columns = [col[0] for col in df.columns]
+    rows = []
+    for a in aggs:
+        # Massive returns timestamp in milliseconds UTC
+        date = pd.Timestamp(a.timestamp, unit="ms", tz="UTC").normalize().tz_localize(None)
+        rows.append({
+            "Date":   date,
+            "Open":   a.open,
+            "High":   a.high,
+            "Low":    a.low,
+            "Close":  a.close,
+            "Volume": a.volume,
+        })
 
-    # Only keep columns that exist in both fetch and existing
-    cols = [c for c in COLUMNS if c in df.columns]
-    new_rows = df[cols].copy()
-    new_rows.index.name = "Date"
+    new_rows = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
 
     # Drop any overlap just in case
-    new_rows = new_rows[new_rows.index > last_date]
+    new_rows = new_rows[new_rows["Date"] > last_date]
     if new_rows.empty:
         print(f"  {ticker}: no new rows after dedup")
         return 0
 
-    updated = pd.concat([existing, new_rows])
-    updated.to_csv(path)
+    # Preserve only columns that exist in the existing file
+    existing_cols = list(existing.columns)
+    for col in new_rows.columns:
+        if col not in existing_cols:
+            existing_cols.append(col)
+
+    updated = pd.concat([existing, new_rows], ignore_index=True)
+
+    # Keep only columns present in existing file (forward-compatible)
+    keep_cols = [c for c in existing_cols if c in updated.columns]
+    updated   = updated[keep_cols]
+    updated.to_csv(path, index=False)
 
     added = len(new_rows)
-    print(f"  {ticker}: appended {added} row(s), now through {new_rows.index.max().date()}")
+    print(f"  {ticker}: appended {added} row(s), now through {new_rows['Date'].max().date()}")
     return added
 
 
 def main():
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting update run")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Massive API update run")
+
+    client = get_client()
 
     # Pull latest before updating
     git(["pull", "--ff-only"])
 
-    total_added = 0
-    updated_tickers = []
+    total_added      = 0
+    updated_tickers  = []
 
     for ticker in TICKERS:
-        added = update_ticker(ticker)
+        added = update_ticker(client, ticker)
         if added > 0:
             total_added += added
             updated_tickers.append(ticker)
