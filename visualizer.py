@@ -78,22 +78,26 @@ with tab_viz:
         return buy, sell
 
 
-    def simulate_portfolio(df: pd.DataFrame, sma: pd.Series, lower_bb: pd.Series,
+    def simulate_portfolio(df: pd.DataFrame, upper_bb: pd.Series, lower_bb: pd.Series,
                            initial: float, stop_pct: float):
         balance  = initial
+        shares   = 0.0
         in_trade = False
-        entry_price = entry_date = shares = None
+        entry_price = entry_date = None
         trades = []
+        eq_dates, eq_vals = [], []
 
         for i in range(1, len(df)):
-            close        = df["Close"].iloc[i]
-            prev_close   = df["Close"].iloc[i - 1]
-            cur_sma      = sma.iloc[i]
-            cur_lower    = lower_bb.iloc[i]
-            prev_lower   = lower_bb.iloc[i - 1]
-            date         = df["Date"].iloc[i]
+            close      = df["Close"].iloc[i]
+            prev_close = df["Close"].iloc[i - 1]
+            cur_upper  = upper_bb.iloc[i]
+            cur_lower  = lower_bb.iloc[i]
+            prev_upper = upper_bb.iloc[i - 1]
+            prev_lower = lower_bb.iloc[i - 1]
+            date       = df["Date"].iloc[i]
 
-            if pd.isna(cur_sma) or pd.isna(cur_lower) or pd.isna(prev_lower):
+            if pd.isna(cur_upper) or pd.isna(cur_lower) or pd.isna(prev_lower):
+                eq_dates.append(date); eq_vals.append(balance)
                 continue
 
             if not in_trade:
@@ -104,30 +108,24 @@ with tab_viz:
                     in_trade    = True
             else:
                 stop_price = entry_price * (1 - stop_pct)
-                if close >= cur_sma:
+                tp = close > cur_upper and prev_close <= prev_upper
+                sl = close <= stop_price
+                if tp or sl:
                     balance = shares * close
                     trades.append({
                         "Entry Date":  entry_date.strftime("%Y-%m-%d"),
                         "Entry $":     round(entry_price, 2),
                         "Exit Date":   date.strftime("%Y-%m-%d"),
                         "Exit $":      round(close, 2),
-                        "Exit Reason": "Take Profit ✅",
+                        "Exit Reason": "Take Profit ✅" if tp else "Stop Loss 🛑",
                         "Return %":    round((close / entry_price - 1) * 100, 1),
                         "Balance $":   round(balance, 2),
                     })
+                    shares   = 0.0
                     in_trade = False
-                elif close <= stop_price:
-                    balance = shares * close
-                    trades.append({
-                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
-                        "Entry $":     round(entry_price, 2),
-                        "Exit Date":   date.strftime("%Y-%m-%d"),
-                        "Exit $":      round(close, 2),
-                        "Exit Reason": "Stop Loss 🛑",
-                        "Return %":    round((close / entry_price - 1) * 100, 1),
-                        "Balance $":   round(balance, 2),
-                    })
-                    in_trade = False
+
+            eq_dates.append(date)
+            eq_vals.append(shares * close if in_trade else balance)
 
         if in_trade:
             close   = df["Close"].iloc[-1]
@@ -142,7 +140,8 @@ with tab_viz:
                 "Balance $":   round(balance, 2),
             })
 
-        return round(balance, 2), trades
+        eq_series = pd.Series(eq_vals, index=eq_dates)
+        return round(balance, 2), trades, eq_series
 
 
     # ── Load GSIT ─────────────────────────────────────────────────────────────
@@ -258,7 +257,7 @@ with tab_viz:
 
     # ── Pre-compute trade outcomes (used by navigator + portfolio simulation) ──
     sma_full, upper_full, lower_full = compute_bollinger(df_full["Close"], N, K)
-    _, _sim_trades = simulate_portfolio(df, sma, lower_bb, 5000.0, STOP_PCT)
+    _, _sim_trades, _ = simulate_portfolio(df, upper_bb, lower_bb, 5000.0, STOP_PCT)
     _outcome_map   = {t["Entry Date"]: t for t in _sim_trades}
 
     # ── Signal Navigator ───────────────────────────────────────────────────────
@@ -389,11 +388,11 @@ with tab_viz:
 
             if _is_buy:
                 _oc  = _sig["outcome"]
-                _sma_at = sma_full.iloc[_fi]
+                _tp_at = upper_full.iloc[_fi]
                 _i1, _i2, _i3, _i4, _i5 = st.columns(5)
-                _i1.metric("Entry Price",       f"${_sig['price']:.2f}")
-                _i2.metric("Stop Loss",         f"${_sig['price'] * (1 - STOP_PCT):.2f}")
-                _i3.metric("Take Profit (SMA)", f"${_sma_at:.2f}" if not pd.isna(_sma_at) else "—")
+                _i1.metric("Entry Price",           f"${_sig['price']:.2f}")
+                _i2.metric("Stop Loss",             f"${_sig['price'] * (1 - STOP_PCT):.2f}")
+                _i3.metric("Take Profit (BB Upper)", f"${_tp_at:.2f}" if not pd.isna(_tp_at) else "—")
                 _i4.metric("Exit Price",        f"${_oc['Exit $']:.2f}"      if _oc else "—")
                 _i5.metric("Return",            f"{_oc['Return %']:+.1f}%"   if _oc else "—",
                            delta=f"{_oc['Exit Reason']}" if _oc else None,
@@ -429,7 +428,7 @@ with tab_viz:
         min_value=1.0, value=5000.0, step=100.0, format="%.2f"
     )
 
-    final_balance, trades = simulate_portfolio(df, sma, lower_bb, initial_investment, STOP_PCT)
+    final_balance, trades, eq_series = simulate_portfolio(df, upper_bb, lower_bb, initial_investment, STOP_PCT)
 
     if not trades:
         st.info("No completed trades in the selected date range.")
@@ -438,11 +437,44 @@ with tab_viz:
         closed = [t for t in trades if t["Exit Reason"] != "Still Open 🟡"]
         wins   = [t for t in closed if t["Return %"] > 0]
 
-        m1, m2, m3, m4 = st.columns(4)
+        # Max drawdown from daily equity curve
+        if not eq_series.empty:
+            _eq_peak = eq_series.cummax()
+            _max_dd  = float((_eq_peak - eq_series).max())
+            _max_dd_pct = _max_dd / _eq_peak.max() * 100 if _eq_peak.max() > 0 else 0.0
+        else:
+            _max_dd = _max_dd_pct = 0.0
+
+        m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Final Balance",  f"${final_balance:,.2f}")
         m2.metric("Total Return",   f"{total_return_pct:+.1f}%")
         m3.metric("Trades",         len(trades))
         m4.metric("Win Rate",       f"{len(wins)/len(closed)*100:.0f}%" if closed else "—")
+        m5.metric("Max Drawdown",   f"${_max_dd:,.0f}  ({_max_dd_pct:.1f}%)")
+
+        # Equity curve
+        if not eq_series.empty:
+            _fig_eq = go.Figure()
+            _fig_eq.add_trace(go.Scatter(
+                x=eq_series.index, y=eq_series.values,
+                mode="lines", name="Portfolio Value",
+                line=dict(color="#636EFA", width=2),
+                fill="tozeroy", fillcolor="rgba(99,110,250,0.08)",
+            ))
+            _bnh_eq = initial_investment / df["Close"].iloc[0] * df.set_index("Date")["Close"]
+            _fig_eq.add_trace(go.Scatter(
+                x=_bnh_eq.index, y=_bnh_eq.values,
+                mode="lines", name="Buy & Hold",
+                line=dict(color="rgba(150,150,150,0.6)", width=1.5, dash="dash"),
+            ))
+            _fig_eq.update_layout(
+                xaxis=dict(type="date", tickformat="%b %Y"),
+                yaxis=dict(tickprefix="$"),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                height=280, margin=dict(l=10, r=10, t=30, b=10),
+            )
+            st.plotly_chart(_fig_eq, use_container_width=True)
 
         trade_df = pd.DataFrame(trades)
         trade_df.insert(0, "#", range(1, len(trade_df) + 1))
@@ -512,20 +544,23 @@ with tab_kc_viz:
     def simulate_kc_portfolio(df: pd.DataFrame, ema: pd.Series, upper_kc: pd.Series, lower_kc: pd.Series,
                               initial: float, stop_pct: float):
         balance  = initial
+        shares   = 0.0
         in_trade = False
-        entry_price = entry_date = shares = None
+        entry_price = entry_date = None
         trades = []
+        eq_dates, eq_vals = [], []
 
         for i in range(1, len(df)):
-            close        = df["Close"].iloc[i]
-            prev_close   = df["Close"].iloc[i - 1]
-            cur_upper    = upper_kc.iloc[i]
-            cur_lower    = lower_kc.iloc[i]
-            prev_upper   = upper_kc.iloc[i - 1]
-            prev_lower   = lower_kc.iloc[i - 1]
-            date         = df["Date"].iloc[i]
+            close      = df["Close"].iloc[i]
+            prev_close = df["Close"].iloc[i - 1]
+            cur_upper  = upper_kc.iloc[i]
+            cur_lower  = lower_kc.iloc[i]
+            prev_upper = upper_kc.iloc[i - 1]
+            prev_lower = lower_kc.iloc[i - 1]
+            date       = df["Date"].iloc[i]
 
             if pd.isna(cur_upper) or pd.isna(cur_lower) or pd.isna(prev_lower):
+                eq_dates.append(date); eq_vals.append(balance)
                 continue
 
             if not in_trade:
@@ -536,30 +571,24 @@ with tab_kc_viz:
                     in_trade    = True
             else:
                 stop_price = entry_price * (1 - stop_pct)
-                if close > cur_upper and prev_close <= prev_upper:
+                tp = close > cur_upper and prev_close <= prev_upper
+                sl = close <= stop_price
+                if tp or sl:
                     balance = shares * close
                     trades.append({
                         "Entry Date":  entry_date.strftime("%Y-%m-%d"),
                         "Entry $":     round(entry_price, 2),
                         "Exit Date":   date.strftime("%Y-%m-%d"),
                         "Exit $":      round(close, 2),
-                        "Exit Reason": "Take Profit ✅",
+                        "Exit Reason": "Take Profit ✅" if tp else "Stop Loss 🛑",
                         "Return %":    round((close / entry_price - 1) * 100, 1),
                         "Balance $":   round(balance, 2),
                     })
+                    shares   = 0.0
                     in_trade = False
-                elif close <= stop_price:
-                    balance = shares * close
-                    trades.append({
-                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
-                        "Entry $":     round(entry_price, 2),
-                        "Exit Date":   date.strftime("%Y-%m-%d"),
-                        "Exit $":      round(close, 2),
-                        "Exit Reason": "Stop Loss 🛑",
-                        "Return %":    round((close / entry_price - 1) * 100, 1),
-                        "Balance $":   round(balance, 2),
-                    })
-                    in_trade = False
+
+            eq_dates.append(date)
+            eq_vals.append(shares * close if in_trade else balance)
 
         if in_trade:
             close   = df["Close"].iloc[-1]
@@ -574,7 +603,8 @@ with tab_kc_viz:
                 "Balance $":   round(balance, 2),
             })
 
-        return round(balance, 2), trades
+        eq_series = pd.Series(eq_vals, index=eq_dates)
+        return round(balance, 2), trades, eq_series
 
     # ── Load GSIT ─────────────────────────────────────────────────────────────
     KC_DATA_DIR = Path(__file__).parent / "data"
@@ -693,7 +723,7 @@ with tab_kc_viz:
     st.plotly_chart(kc_fig, use_container_width=True)
 
     # ── Pre-compute trade outcomes (used by navigator + portfolio simulation) ──
-    _, _kc_sim_trades = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, 5000.0, KC_STOP_PCT)
+    _, _kc_sim_trades, _ = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, 5000.0, KC_STOP_PCT)
     _kc_outcome_map   = {t["Entry Date"]: t for t in _kc_sim_trades}
 
     # ── Signal Navigator ───────────────────────────────────────────────────────
@@ -865,7 +895,7 @@ with tab_kc_viz:
         key="kc_initial"
     )
 
-    kc_final_balance, kc_trades = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, kc_initial_investment, KC_STOP_PCT)
+    kc_final_balance, kc_trades, kc_eq_series = simulate_kc_portfolio(kc_df, kc_ema, kc_upper, kc_lower, kc_initial_investment, KC_STOP_PCT)
 
     if not kc_trades:
         st.info("No completed trades in the selected date range.")
@@ -874,11 +904,42 @@ with tab_kc_viz:
         kc_closed = [t for t in kc_trades if t["Exit Reason"] != "Still Open 🟡"]
         kc_wins   = [t for t in kc_closed if t["Return %"] > 0]
 
-        kc_m1, kc_m2, kc_m3, kc_m4 = st.columns(4)
+        if not kc_eq_series.empty:
+            _kc_eq_peak  = kc_eq_series.cummax()
+            _kc_max_dd   = float((_kc_eq_peak - kc_eq_series).max())
+            _kc_max_dd_pct = _kc_max_dd / _kc_eq_peak.max() * 100 if _kc_eq_peak.max() > 0 else 0.0
+        else:
+            _kc_max_dd = _kc_max_dd_pct = 0.0
+
+        kc_m1, kc_m2, kc_m3, kc_m4, kc_m5 = st.columns(5)
         kc_m1.metric("Final Balance",  f"${kc_final_balance:,.2f}")
         kc_m2.metric("Total Return",   f"{kc_total_return_pct:+.1f}%")
         kc_m3.metric("Trades",         len(kc_trades))
         kc_m4.metric("Win Rate",       f"{len(kc_wins)/len(kc_closed)*100:.0f}%" if kc_closed else "—")
+        kc_m5.metric("Max Drawdown",   f"${_kc_max_dd:,.0f}  ({_kc_max_dd_pct:.1f}%)")
+
+        if not kc_eq_series.empty:
+            _kc_fig_eq = go.Figure()
+            _kc_fig_eq.add_trace(go.Scatter(
+                x=kc_eq_series.index, y=kc_eq_series.values,
+                mode="lines", name="Portfolio Value",
+                line=dict(color="#FF7F0E", width=2),
+                fill="tozeroy", fillcolor="rgba(255,127,14,0.08)",
+            ))
+            _kc_bnh = kc_initial_investment / kc_df["Close"].iloc[0] * kc_df.set_index("Date")["Close"]
+            _kc_fig_eq.add_trace(go.Scatter(
+                x=_kc_bnh.index, y=_kc_bnh.values,
+                mode="lines", name="Buy & Hold",
+                line=dict(color="rgba(150,150,150,0.6)", width=1.5, dash="dash"),
+            ))
+            _kc_fig_eq.update_layout(
+                xaxis=dict(type="date", tickformat="%b %Y"),
+                yaxis=dict(tickprefix="$"),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                height=280, margin=dict(l=10, r=10, t=30, b=10),
+            )
+            st.plotly_chart(_kc_fig_eq, use_container_width=True)
 
         kc_trade_df = pd.DataFrame(kc_trades)
         kc_trade_df.insert(0, "#", range(1, len(kc_trade_df) + 1))

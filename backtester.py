@@ -81,75 +81,73 @@ def run(close: pd.Series, n: int, k: float, stop_pct: float, min_trades: int,
     sma, upper, lower = bollinger(close, n, k)
     buy = (close < lower) & (close.shift(1) >= lower.shift(1))
 
-    trades = []
-    in_trade    = False
-    entry_price = None
-    entry_idx   = None
+    # Single-pass: signal detection + compounding balance + daily mark-to-market
+    trades       = []
+    daily_equity = []           # portfolio value at every bar — used for true max drawdown
+    balance      = INITIAL_CAPITAL
+    shares       = 0.0
+    in_trade     = False
+    entry_price  = entry_idx = None
+    bal_at_entry = INITIAL_CAPITAL
+    wins_count   = 0
+    win_pnls     = []
+    loss_pnls    = []
+    stop_hits    = 0
+    trade_rets   = []
 
     for i in range(max(n, entry_from_idx), len(close)):
+        c = close.iloc[i]
         if not in_trade:
             if buy.iloc[i]:
-                in_trade    = True
-                entry_price = close.iloc[i]
-                entry_idx   = i
+                in_trade     = True
+                entry_price  = c
+                entry_idx    = i
+                bal_at_entry = balance
+                shares       = balance / c
         else:
-            c = close.iloc[i]
             # Take profit: close crosses above upper Bollinger Band
-            if c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]:
-                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "tp"})
+            tp = c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]
+            sl = c <= entry_price * (1 - stop_pct)
+            if tp or sl:
+                balance  = shares * c
+                ret_pct  = (c / entry_price - 1) * 100
+                pnl      = balance - bal_at_entry
+                trades.append({"entry": entry_price, "exit": c,
+                                "hold": i - entry_idx, "reason": "tp" if tp else "sl"})
+                trade_rets.append(ret_pct)
+                if pnl > 0:
+                    wins_count += 1
+                    win_pnls.append(pnl)
+                else:
+                    loss_pnls.append(pnl)
+                if not tp:
+                    stop_hits += 1
+                shares   = 0.0
                 in_trade = False
-            elif c <= entry_price * (1 - stop_pct):
-                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "sl"})
-                in_trade = False
+
+        # Mark-to-market: value of portfolio at today's close
+        daily_equity.append(shares * c if in_trade else balance)
 
     if len(trades) < min_trades:
         return None
 
-    # Compounding model: full portfolio balance reinvested each trade
-    balance       = INITIAL_CAPITAL
-    balances      = [INITIAL_CAPITAL]
-    trade_rets    = []
-    wins_count    = 0
-    win_pnls      = []
-    loss_pnls     = []
-    stop_hits     = 0
-
-    for trade in trades:
-        shares      = balance / trade["entry"]
-        new_balance = shares * trade["exit"]
-        pnl         = new_balance - balance
-        ret_pct     = (trade["exit"] - trade["entry"]) / trade["entry"] * 100
-
-        trade_rets.append(ret_pct)
-        if pnl > 0:
-            wins_count += 1
-            win_pnls.append(pnl)
-        else:
-            loss_pnls.append(pnl)
-        if trade["reason"] == "sl":
-            stop_hits += 1
-
-        balance = new_balance
-        balances.append(balance)
-
-    t             = pd.DataFrame(trades)
+    final_balance = shares * close.iloc[-1] if in_trade else balance
+    total_return  = final_balance - INITIAL_CAPITAL
+    total_ret_pct = total_return / INITIAL_CAPITAL * 100
     num_trades    = len(trades)
     win_rate      = wins_count / num_trades * 100
     avg_win       = sum(win_pnls)  / len(win_pnls)  if win_pnls  else 0.0
     avg_loss      = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
     avg_ret_pct   = sum(trade_rets) / len(trade_rets)
-    avg_hold      = t["hold"].mean()
-    final_balance = balance
-    total_return  = final_balance - INITIAL_CAPITAL
-    total_ret_pct = total_return / INITIAL_CAPITAL * 100
+    avg_hold      = sum(t["hold"] for t in trades) / len(trades)
 
-    # Max drawdown on portfolio value curve
-    bal_series = pd.Series(balances)
-    peak       = bal_series.cummax()
-    max_dd     = (peak - bal_series).max()
-    max_dd_pct = max_dd / peak.max() * 100
+    # True max drawdown from daily mark-to-market equity curve
+    eq_s       = pd.Series(daily_equity)
+    peak       = eq_s.cummax()
+    max_dd     = float((peak - eq_s).max())
+    max_dd_pct = max_dd / peak.max() * 100 if peak.max() > 0 else 0.0
 
-    rdr = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0  # always cap at 999 — floating-point near-zero max_dd can otherwise produce quadrillion scores
+    rdr = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0  # always cap at 999
 
     return {
         "N":              n,
@@ -425,9 +423,13 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
         rows_html.append(f"<tr{tr_class}>{cells}</tr>")
 
     good_count  = sum(1 for _, r in df.iterrows() if isinstance(r["RDR"], float) and r["RDR"] >= RDR_THRESHOLD)
-    best_rdr    = df.loc[df["RDR"].idxmax()]
-    best_ret    = df.loc[df["Total Return $"].idxmax()]
-    best_score  = df.loc[df["Score"].idxmax()]
+    if df.empty:
+        # No combinations passed filters — build a minimal "no results" report
+        best_rdr   = best_ret = best_score = None
+    else:
+        best_rdr   = df.loc[df["RDR"].idxmax()]
+        best_ret   = df.loc[df["Total Return $"].idxmax()]
+        best_score = df.loc[df["Score"].idxmax()]
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -537,18 +539,18 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   </div>
   <div class="card">
     <div class="label">Best RDR</div>
-    <div class="value">{best_rdr["RDR"]:.2f}</div>
-    <div class="sub">N={int(best_rdr["N"])} K={best_rdr["K"]:.1f} Stop={best_rdr["Stop %"]:.0%}</div>
+    <div class="value">{"—" if best_rdr is None else f"{best_rdr['RDR']:.2f}"}</div>
+    <div class="sub">{"No combinations passed filters" if best_rdr is None else f"N={int(best_rdr['N'])} K={best_rdr['K']:.1f} Stop={best_rdr['Stop %']:.0%}"}</div>
   </div>
   <div class="card">
     <div class="label">Best Total Return</div>
-    <div class="value">${best_ret["Total Return $"]:,.2f}</div>
-    <div class="sub">N={int(best_ret["N"])} K={best_ret["K"]:.1f} Stop={best_ret["Stop %"]:.0%}</div>
+    <div class="value">{"—" if best_ret is None else f"${best_ret['Total Return $']:,.2f}"}</div>
+    <div class="sub">{"" if best_ret is None else f"N={int(best_ret['N'])} K={best_ret['K']:.1f} Stop={best_ret['Stop %']:.0%}"}</div>
   </div>
   <div class="card">
     <div class="label">Best Score</div>
-    <div class="value">{best_score["Score"]:.1f}</div>
-    <div class="sub">N={int(best_score["N"])} K={best_score["K"]:.1f} Stop={best_score["Stop %"]:.0%}</div>
+    <div class="value">{"—" if best_score is None else f"{best_score['Score']:.1f}"}</div>
+    <div class="sub">{"" if best_score is None else f"N={int(best_score['N'])} K={best_score['K']:.1f} Stop={best_score['Stop %']:.0%}"}</div>
   </div>
   <div class="card">
     <div class="label">Initial Capital</div>
@@ -564,7 +566,8 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
   <p class="heatmap-caption">
     Each cell = composite Score (Total Return % × RDR ÷ {SCORE_DIVISOR}).
     Gray cells did not meet the RDR ≥ {RDR_THRESHOLD} threshold.
-    <strong>Bold outline = current strategy params (N={best_score["N"]:.0f}, K={best_score["K"]:.1f})</strong>.
+    {"<strong>No combinations passed all filters.</strong>" if best_score is None else f"<strong>Bold outline = current strategy params (N={best_score['N']:.0f}, K={best_score['K']:.1f})</strong>."}
+
   </p>
   <div class="heatmap-wrap">
     {build_heatmap(df_all, df, n_values or N_VALUES, k_values or K_VALUES)}
@@ -764,73 +767,71 @@ def run_keltner(close: pd.Series, high: pd.Series, low: pd.Series,
     else:
         buy = kc_cross
 
-    trades = []
-    in_trade    = False
-    entry_price = None
-    entry_idx   = None
+    # Single-pass: signal detection + compounding balance + daily mark-to-market
+    trades       = []
+    daily_equity = []           # portfolio value at every bar — used for true max drawdown
+    balance      = INITIAL_CAPITAL
+    shares       = 0.0
+    in_trade     = False
+    entry_price  = entry_idx = None
+    bal_at_entry = INITIAL_CAPITAL
+    wins_count   = 0
+    win_pnls     = []
+    loss_pnls    = []
+    stop_hits    = 0
+    trade_rets   = []
 
     for i in range(max(n, entry_from_idx), len(close)):
+        c = close.iloc[i]
         if not in_trade:
             if buy.iloc[i]:
-                in_trade    = True
-                entry_price = close.iloc[i]
-                entry_idx   = i
+                in_trade     = True
+                entry_price  = c
+                entry_idx    = i
+                bal_at_entry = balance
+                shares       = balance / c
         else:
-            c = close.iloc[i]
             # Take profit: close crosses above upper Keltner Band
-            if c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]:
-                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "tp"})
+            tp = c > upper.iloc[i] and close.iloc[i - 1] <= upper.iloc[i - 1]
+            sl = c <= entry_price * (1 - stop_pct)
+            if tp or sl:
+                balance  = shares * c
+                ret_pct  = (c / entry_price - 1) * 100
+                pnl      = balance - bal_at_entry
+                trades.append({"entry": entry_price, "exit": c,
+                                "hold": i - entry_idx, "reason": "tp" if tp else "sl"})
+                trade_rets.append(ret_pct)
+                if pnl > 0:
+                    wins_count += 1
+                    win_pnls.append(pnl)
+                else:
+                    loss_pnls.append(pnl)
+                if not tp:
+                    stop_hits += 1
+                shares   = 0.0
                 in_trade = False
-            elif c <= entry_price * (1 - stop_pct):
-                trades.append({"entry": entry_price, "exit": c, "hold": i - entry_idx, "reason": "sl"})
-                in_trade = False
+
+        # Mark-to-market: value of portfolio at today's close
+        daily_equity.append(shares * c if in_trade else balance)
 
     if len(trades) < min_trades:
         return None
 
-    # Compounding model: full portfolio balance reinvested each trade
-    balance       = INITIAL_CAPITAL
-    balances      = [INITIAL_CAPITAL]
-    trade_rets    = []
-    wins_count    = 0
-    win_pnls      = []
-    loss_pnls     = []
-    stop_hits     = 0
-
-    for trade in trades:
-        shares      = balance / trade["entry"]
-        new_balance = shares * trade["exit"]
-        pnl         = new_balance - balance
-        ret_pct     = (trade["exit"] - trade["entry"]) / trade["entry"] * 100
-
-        trade_rets.append(ret_pct)
-        if pnl > 0:
-            wins_count += 1
-            win_pnls.append(pnl)
-        else:
-            loss_pnls.append(pnl)
-        if trade["reason"] == "sl":
-            stop_hits += 1
-
-        balance = new_balance
-        balances.append(balance)
-
-    t             = pd.DataFrame(trades)
+    final_balance = shares * close.iloc[-1] if in_trade else balance
+    total_return  = final_balance - INITIAL_CAPITAL
+    total_ret_pct = total_return / INITIAL_CAPITAL * 100
     num_trades    = len(trades)
     win_rate      = wins_count / num_trades * 100
     avg_win       = sum(win_pnls)  / len(win_pnls)  if win_pnls  else 0.0
     avg_loss      = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
     avg_ret_pct   = sum(trade_rets) / len(trade_rets)
-    avg_hold      = t["hold"].mean()
-    final_balance = balance
-    total_return  = final_balance - INITIAL_CAPITAL
-    total_ret_pct = total_return / INITIAL_CAPITAL * 100
+    avg_hold      = sum(t["hold"] for t in trades) / len(trades)
 
-    # Max drawdown on portfolio value curve
-    bal_series = pd.Series(balances)
-    peak       = bal_series.cummax()
-    max_dd     = (peak - bal_series).max()
-    max_dd_pct = max_dd / peak.max() * 100
+    # True max drawdown from daily mark-to-market equity curve
+    eq_s       = pd.Series(daily_equity)
+    peak       = eq_s.cummax()
+    max_dd     = float((peak - eq_s).max())
+    max_dd_pct = max_dd / peak.max() * 100 if peak.max() > 0 else 0.0
 
     rdr = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0  # always cap at 999
 
