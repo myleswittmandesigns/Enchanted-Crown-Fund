@@ -1,4 +1,5 @@
 import re
+import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -30,8 +31,8 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_kc_viz, tab_bt, tab_kc_bt, tab_rules = st.tabs([
-    "📈 Bollinger", "📈 Keltner", "⚙️ BB Backtest", "⚙️ KC Backtest", "📋 Strategy Rules"
+tab_viz, tab_kc_viz, tab_combined, tab_bt, tab_kc_bt, tab_rules = st.tabs([
+    "📈 Bollinger", "📈 Keltner", "🔀 Combined", "⚙️ BB Backtest", "⚙️ KC Backtest", "📋 Strategy Rules"
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -886,6 +887,522 @@ with tab_kc_viz:
     # ── Footer ─────────────────────────────────────────────────────────────────
     kc_most_recent = kc_df_full["Date"].max().strftime("%B %d, %Y")
     st.caption(f"Data source: Yahoo Finance · Most recent data: {kc_most_recent} · Updates daily at 6pm ET on weekdays")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMBINED STRATEGY TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_combined:
+
+    # ── Load params from STRATEGY_RULES.md ───────────────────────────────────
+    def _load_combined_params() -> dict:
+        rules_path = Path(__file__).parent / "STRATEGY_RULES.md"
+        text = rules_path.read_text()
+        def _e(sym: str):
+            pat = rf"\|\s*`{sym}`\s*\|\s*\*{{0,2}}([0-9]+(?:\.[0-9]+)?)%?\*{{0,2}}\s*\|"
+            m = re.search(pat, text)
+            if not m:
+                st.error(f"❌ Cannot find `{sym}` in STRATEGY_RULES.md")
+                st.stop()
+            v = m.group(1)
+            return float(v) if "." in v else int(v)
+        return {
+            "bb_n":   _e("N"),
+            "bb_k":   _e("K"),
+            "bb_stp": _e("StopPct") / 100,
+            "kc_n":   _e("KC_N"),
+            "kc_k":   _e("KC_K"),
+            "kc_stp": _e("KC_StopPct") / 100,
+            "kc_lr":  _e("KC_LR_PERIOD"),
+        }
+
+    _cp = _load_combined_params()
+
+    # ── Legend callout ────────────────────────────────────────────────────────
+    st.info(
+        "**How regime switching works:** When Bollinger Bands sit *inside* Keltner Channels "
+        "(the squeeze), volatility is compressed and the market is ranging — BB signals are used. "
+        "When BB expands *outside* KC, the market is trending or breaking out — KC signals (with "
+        "linear-regression trend filter) are used instead.\n\n"
+        "🔵 **Blue background** = Ranging → BB active &nbsp;&nbsp; "
+        "🟠 **Orange background** = Trending → KC active"
+    )
+
+    # ── Active params (read-only) ─────────────────────────────────────────────
+    with st.expander("📋 Active Combined Strategy Parameters", expanded=False):
+        st.caption("Both parameter sets are read from `STRATEGY_RULES.md`.")
+        _pc1, _pc2, _pc3, _pc4, _pc5 = st.columns(5)
+        _pc1.metric("BB N", _cp["bb_n"])
+        _pc2.metric("BB K", _cp["bb_k"])
+        _pc3.metric("KC N", _cp["kc_n"])
+        _pc4.metric("KC K", _cp["kc_k"])
+        _pc5.metric("KC LR Period", _cp["kc_lr"])
+
+    # ── Date range + display settings ────────────────────────────────────────
+    _cb_df_full = pd.read_csv(
+        Path(__file__).parent / "data" / "GSIT_daily_high_low.csv", parse_dates=["Date"]
+    ).sort_values("Date").reset_index(drop=True)
+
+    with st.expander("⚙️ View Settings", expanded=False):
+        _cba, _cbb = st.columns(2)
+        with _cba:
+            _cb_start = st.date_input(
+                "From",
+                value=_cb_df_full["Date"].min().date(),
+                min_value=_cb_df_full["Date"].min().date(),
+                max_value=_cb_df_full["Date"].max().date(),
+                key="cb_start",
+            )
+        with _cbb:
+            _cb_end = st.date_input(
+                "To",
+                value=_cb_df_full["Date"].max().date(),
+                min_value=_cb_df_full["Date"].min().date(),
+                max_value=_cb_df_full["Date"].max().date(),
+                key="cb_end",
+            )
+        _cb_show_sig = st.toggle("Show buy/sell signals", value=True, key="cb_signals")
+
+    # ── Compute all indicators on FULL history (for warm-up accuracy) ─────────
+    _cl  = _cb_df_full["Close"]
+    _hi  = _cb_df_full["High"]
+    _lo  = _cb_df_full["Low"]
+
+    # BB
+    _bb_sma   = _cl.rolling(_cp["bb_n"]).mean()
+    _bb_std   = _cl.rolling(_cp["bb_n"]).std(ddof=0)
+    _bb_upper = _bb_sma + _cp["bb_k"] * _bb_std
+    _bb_lower = _bb_sma - _cp["bb_k"] * _bb_std
+
+    # KC
+    _kc_ema = _cl.ewm(span=_cp["kc_n"], adjust=False).mean()
+    _kc_tr  = pd.concat([
+        _hi - _lo,
+        (_hi - _cl.shift(1)).abs(),
+        (_lo - _cl.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    _kc_atr   = _kc_tr.rolling(_cp["kc_n"]).mean()
+    _kc_upper = _kc_ema + _cp["kc_k"] * _kc_atr
+    _kc_lower = _kc_ema - _cp["kc_k"] * _kc_atr
+
+    # Regime: squeeze ON = BB inside KC = ranging
+    _squeeze = (_bb_upper < _kc_upper) & (_bb_lower > _kc_lower)
+
+    # LR slope filter for KC
+    if _cp["kc_lr"] > 0:
+        _x_lr = np.arange(_cp["kc_lr"], dtype=float)
+        _x_lr -= _x_lr.mean()
+        _lr_slope = _cl.rolling(_cp["kc_lr"]).apply(
+            lambda y: float(np.dot(_x_lr, y) / np.dot(_x_lr, _x_lr)), raw=True
+        )
+        _lr_ok = _lr_slope > 0
+    else:
+        _lr_ok = pd.Series(True, index=_cl.index)
+
+    # Raw crossover signals
+    _bb_cross_dn = (_cl < _bb_lower) & (_cl.shift(1) >= _bb_lower.shift(1))
+    _kc_cross_dn = (_cl < _kc_lower) & (_cl.shift(1) >= _kc_lower.shift(1))
+
+    # Combined buy signals gated by regime
+    _buy_bb_full = _bb_cross_dn & _squeeze          # ranging → BB
+    _buy_kc_full = _kc_cross_dn & (~_squeeze) & _lr_ok  # trending → KC
+
+    # ── Generic simulation helper ──────────────────────────────────────────────
+    def _run_sim(df_src, buy_sig, upper_exit, stop_pct, capital, label):
+        """Entry on buy_sig, take profit at upper_exit crossing, stop loss at -stop_pct."""
+        balance = capital
+        in_trade = False
+        entry_price = entry_date = shares = None
+        trades = []
+        eq_dates, eq_vals = [], []
+
+        for i in range(1, len(df_src)):
+            dt    = df_src["Date"].iloc[i]
+            close = df_src["Close"].iloc[i]
+            u_cur = upper_exit.iloc[i]
+            u_prv = upper_exit.iloc[i - 1]
+
+            if pd.isna(u_cur) or pd.isna(u_prv):
+                eq_dates.append(dt); eq_vals.append(balance); continue
+
+            if not in_trade:
+                if buy_sig.iloc[i]:
+                    shares = balance / close
+                    entry_price, entry_date = close, dt
+                    in_trade = True
+            else:
+                tp = close > u_cur and df_src["Close"].iloc[i - 1] <= u_prv
+                sl = close <= entry_price * (1 - stop_pct)
+                if tp or sl:
+                    balance = shares * close
+                    trades.append({
+                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                        "Entry $":     round(entry_price, 2),
+                        "Exit Date":   dt.strftime("%Y-%m-%d"),
+                        "Exit $":      round(close, 2),
+                        "Exit Reason": "Take Profit ✅" if tp else "Stop Loss 🛑",
+                        "Return %":    round((close / entry_price - 1) * 100, 1),
+                        "Balance $":   round(balance, 2),
+                        "Strategy":    label,
+                    })
+                    in_trade = False
+
+            eq_dates.append(dt)
+            eq_vals.append(shares * close if in_trade else balance)
+
+        if in_trade:
+            close = df_src["Close"].iloc[-1]
+            trades.append({
+                "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                "Entry $":     round(entry_price, 2),
+                "Exit Date":   "—",
+                "Exit $":      round(close, 2),
+                "Exit Reason": "Still Open 🟡",
+                "Return %":    round((close / entry_price - 1) * 100, 1),
+                "Balance $":   round(shares * close, 2),
+                "Strategy":    label,
+            })
+
+        return round(balance, 2), trades, pd.Series(eq_vals, index=eq_dates)
+
+    # ── Combined simulation (BB or KC exit depending on which triggered entry) ──
+    def _run_combined_sim(df_src, buy_bb, buy_kc, bb_upper, kc_upper,
+                          bb_stop, kc_stop, capital):
+        balance = capital
+        in_trade = False
+        entry_price = entry_date = shares = active = None
+        trades = []
+        eq_dates, eq_vals = [], []
+
+        for i in range(1, len(df_src)):
+            dt    = df_src["Date"].iloc[i]
+            close = df_src["Close"].iloc[i]
+            bbu_c = bb_upper.iloc[i];   bbu_p = bb_upper.iloc[i - 1]
+            kcu_c = kc_upper.iloc[i];   kcu_p = kc_upper.iloc[i - 1]
+
+            if pd.isna(bbu_c) or pd.isna(kcu_c):
+                eq_dates.append(dt); eq_vals.append(balance); continue
+
+            if not in_trade:
+                if buy_bb.iloc[i]:
+                    shares = balance / close
+                    entry_price, entry_date, active = close, dt, "BB"
+                    in_trade = True
+                elif buy_kc.iloc[i]:
+                    shares = balance / close
+                    entry_price, entry_date, active = close, dt, "KC"
+                    in_trade = True
+            else:
+                stop_pct = bb_stop if active == "BB" else kc_stop
+                u_c      = bbu_c   if active == "BB" else kcu_c
+                u_p      = bbu_p   if active == "BB" else kcu_p
+                tp = close > u_c and df_src["Close"].iloc[i - 1] <= u_p
+                sl = close <= entry_price * (1 - stop_pct)
+                if tp or sl:
+                    balance = shares * close
+                    trades.append({
+                        "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                        "Entry $":     round(entry_price, 2),
+                        "Exit Date":   dt.strftime("%Y-%m-%d"),
+                        "Exit $":      round(close, 2),
+                        "Exit Reason": "Take Profit ✅" if tp else "Stop Loss 🛑",
+                        "Return %":    round((close / entry_price - 1) * 100, 1),
+                        "Balance $":   round(balance, 2),
+                        "Strategy":    active,
+                    })
+                    in_trade = False
+
+            eq_dates.append(dt)
+            eq_vals.append(shares * close if in_trade else balance)
+
+        if in_trade:
+            close = df_src["Close"].iloc[-1]
+            trades.append({
+                "Entry Date":  entry_date.strftime("%Y-%m-%d"),
+                "Entry $":     round(entry_price, 2),
+                "Exit Date":   "—",
+                "Exit $":      round(close, 2),
+                "Exit Reason": "Still Open 🟡",
+                "Return %":    round((close / entry_price - 1) * 100, 1),
+                "Balance $":   round(shares * close, 2),
+                "Strategy":    active,
+            })
+
+        return round(balance, 2), trades, pd.Series(eq_vals, index=eq_dates)
+
+    # ── Run all three sims on full history ─────────────────────────────────────
+    _init_cap = 5_000.0
+
+    _cb_final, _cb_trades, _cb_equity = _run_combined_sim(
+        _cb_df_full, _buy_bb_full, _buy_kc_full,
+        _bb_upper, _kc_upper, _cp["bb_stp"], _cp["kc_stp"], _init_cap,
+    )
+    _bb_final, _bb_trades, _bb_equity = _run_sim(
+        _cb_df_full, _bb_cross_dn, _bb_upper, _cp["bb_stp"], _init_cap, "BB"
+    )
+    _kc_final, _kc_trades, _kc_equity = _run_sim(
+        _cb_df_full, _kc_cross_dn & _lr_ok, _kc_upper, _cp["kc_stp"], _init_cap, "KC"
+    )
+
+    # ── Slice indicators and signals to selected date range ───────────────────
+    _cb_mask = (
+        (_cb_df_full["Date"].dt.date >= _cb_start) &
+        (_cb_df_full["Date"].dt.date <= _cb_end)
+    )
+    _cb_df   = _cb_df_full[_cb_mask].reset_index(drop=True)
+
+    def _s(series): return series[_cb_mask].reset_index(drop=True)
+
+    _v_bb_upper = _s(_bb_upper);  _v_bb_lower = _s(_bb_lower);  _v_bb_sma = _s(_bb_sma)
+    _v_kc_upper = _s(_kc_upper);  _v_kc_lower = _s(_kc_lower);  _v_kc_ema = _s(_kc_ema)
+    _v_squeeze  = _s(_squeeze)
+    _v_buy_bb   = _s(_buy_bb_full)
+    _v_buy_kc   = _s(_buy_kc_full)
+
+    if _cb_df.empty:
+        st.warning("No data in selected date range.")
+        st.stop()
+
+    # ── Build regime background spans ──────────────────────────────────────────
+    def _regime_spans(dates, mask):
+        spans, in_span, t0 = [], False, None
+        for i, (d, v) in enumerate(zip(dates, mask)):
+            if v and not in_span:
+                t0, in_span = d, True
+            elif not v and in_span:
+                spans.append((t0, dates.iloc[i - 1]))
+                in_span = False
+        if in_span:
+            spans.append((t0, dates.iloc[-1]))
+        return spans
+
+    _ranging_spans  = _regime_spans(_cb_df["Date"], _v_squeeze)
+    _trending_spans = _regime_spans(_cb_df["Date"], ~_v_squeeze)
+
+    # ── Main price + regime chart ─────────────────────────────────────────────
+    _fig_cb = go.Figure()
+
+    # Regime shading
+    for _s0, _s1 in _ranging_spans:
+        _fig_cb.add_vrect(x0=_s0, x1=_s1,
+                          fillcolor="rgba(99,110,250,0.07)", line_width=0, layer="below")
+    for _s0, _s1 in _trending_spans:
+        _fig_cb.add_vrect(x0=_s0, x1=_s1,
+                          fillcolor="rgba(255,127,14,0.07)", line_width=0, layer="below")
+
+    # Candlesticks
+    _fig_cb.add_trace(go.Candlestick(
+        x=_cb_df["Date"],
+        open=_cb_df["Open"], high=_cb_df["High"],
+        low=_cb_df["Low"],   close=_cb_df["Close"],
+        name="Price",
+        increasing=dict(line=dict(color="#555"), fillcolor="#555"),
+        decreasing=dict(line=dict(color="#999"), fillcolor="rgba(0,0,0,0)"),
+        showlegend=False,
+    ))
+
+    # BB bands (blue, dashed)
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_bb_upper, mode="lines",
+        name=f"BB Upper (N={_cp['bb_n']}, K={_cp['bb_k']}σ)",
+        line=dict(color="rgba(99,110,250,0.55)", width=1, dash="dot"),
+    ))
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_bb_lower, mode="lines",
+        name="BB Lower",
+        line=dict(color="rgba(99,110,250,0.55)", width=1, dash="dot"),
+        fill="tonexty", fillcolor="rgba(99,110,250,0.04)",
+    ))
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_bb_sma, mode="lines",
+        name=f"SMA({_cp['bb_n']})",
+        line=dict(color="rgba(99,110,250,0.35)", width=1),
+    ))
+
+    # KC bands (orange, solid)
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_kc_upper, mode="lines",
+        name=f"KC Upper (N={_cp['kc_n']}, K={_cp['kc_k']} ATR)",
+        line=dict(color="rgba(255,127,14,0.65)", width=1.5),
+    ))
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_kc_lower, mode="lines",
+        name="KC Lower",
+        line=dict(color="rgba(255,127,14,0.65)", width=1.5),
+        fill="tonexty", fillcolor="rgba(255,127,14,0.04)",
+    ))
+    _fig_cb.add_trace(go.Scatter(
+        x=_cb_df["Date"], y=_v_kc_ema, mode="lines",
+        name=f"EMA({_cp['kc_n']})",
+        line=dict(color="rgba(255,127,14,0.35)", width=1),
+    ))
+
+    # Buy signals — blue = from BB, orange = from KC
+    if _cb_show_sig:
+        if _v_buy_bb.any():
+            _fig_cb.add_trace(go.Scatter(
+                x=_cb_df["Date"][_v_buy_bb],
+                y=_cb_df["Low"][_v_buy_bb] * 0.981,
+                mode="markers", name="BB Buy ▲ (ranging)",
+                marker=dict(symbol="triangle-up", size=11, color="#636EFA",
+                            line=dict(color="navy", width=1)),
+            ))
+        if _v_buy_kc.any():
+            _fig_cb.add_trace(go.Scatter(
+                x=_cb_df["Date"][_v_buy_kc],
+                y=_cb_df["Low"][_v_buy_kc] * 0.972,
+                mode="markers", name="KC Buy ▲ (trending)",
+                marker=dict(symbol="triangle-up", size=11, color="#FF7F0E",
+                            line=dict(color="darkorange", width=1)),
+            ))
+
+    _fig_cb.update_layout(
+        xaxis=dict(
+            rangeslider=dict(visible=True, thickness=0.05),
+            type="date", tickformat="%b %Y",
+            rangeselector=dict(
+                buttons=[
+                    dict(count=1,  label="1M", step="month", stepmode="backward"),
+                    dict(count=6,  label="6M", step="month", stepmode="backward"),
+                    dict(count=1,  label="1Y", step="year",  stepmode="backward"),
+                    dict(count=5,  label="5Y", step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ],
+                bgcolor="#f0f0f0", activecolor="#636EFA", font=dict(size=10), y=1.08,
+            ),
+        ),
+        yaxis=dict(tickprefix="$", automargin=True),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=10)),
+        height=560,
+        margin=dict(l=10, r=10, t=60, b=10),
+        dragmode="pan",
+    )
+    st.plotly_chart(_fig_cb, use_container_width=True)
+
+    # ── Regime stats ──────────────────────────────────────────────────────────
+    _valid_mask  = _v_squeeze.notna()
+    _total_days  = int(_valid_mask.sum())
+    _ranging_d   = int(_v_squeeze[_valid_mask].sum())
+    _trending_d  = _total_days - _ranging_d
+    _cur_regime  = "🔵 Ranging → BB" if bool(_v_squeeze.dropna().iloc[-1]) else "🟠 Trending → KC"
+
+    _rg1, _rg2, _rg3 = st.columns(3)
+    _rg1.metric("Current Regime", _cur_regime)
+    _rg2.metric("Ranging (BB active)",
+                f"{_ranging_d}d  ({_ranging_d / _total_days * 100:.0f}%)")
+    _rg3.metric("Trending (KC active)",
+                f"{_trending_d}d  ({_trending_d / _total_days * 100:.0f}%)")
+
+    st.divider()
+
+    # ── Equity curve comparison ───────────────────────────────────────────────
+    st.markdown("### 📈 Equity Curve Comparison")
+    st.caption("All three strategies simulated from the same $5,000 starting capital over full history. "
+               "Take profit = upper band crossing; stop loss = configured stop %.")
+
+    # Slice equity curves to selected date range
+    def _slice_equity(eq_series):
+        if eq_series.empty:
+            return pd.Series(dtype=float)
+        eq_df = eq_series.reset_index()
+        eq_df.columns = ["Date", "Value"]
+        mask = (eq_df["Date"].dt.date >= _cb_start) & (eq_df["Date"].dt.date <= _cb_end)
+        return eq_df[mask].set_index("Date")["Value"]
+
+    _eq_cb_sliced = _slice_equity(_cb_equity)
+    _eq_bb_sliced = _slice_equity(_bb_equity)
+    _eq_kc_sliced = _slice_equity(_kc_equity)
+
+    # Buy & hold baseline
+    _bnh_start_price = _cb_df_full.loc[
+        _cb_df_full["Date"].dt.date >= _cb_start, "Close"
+    ].iloc[0] if (_cb_df_full["Date"].dt.date >= _cb_start).any() else _cb_df_full["Close"].iloc[0]
+
+    _bnh_series = _cb_df.set_index("Date")["Close"] / _bnh_start_price * _init_cap
+
+    _fig_eq = go.Figure()
+    if not _eq_cb_sliced.empty:
+        _fig_eq.add_trace(go.Scatter(
+            x=_eq_cb_sliced.index, y=_eq_cb_sliced.values,
+            mode="lines", name="Combined (BB+KC)",
+            line=dict(color="#2ca02c", width=2.5),
+        ))
+    if not _eq_bb_sliced.empty:
+        _fig_eq.add_trace(go.Scatter(
+            x=_eq_bb_sliced.index, y=_eq_bb_sliced.values,
+            mode="lines", name="BB Only",
+            line=dict(color="#636EFA", width=1.5, dash="dot"),
+        ))
+    if not _eq_kc_sliced.empty:
+        _fig_eq.add_trace(go.Scatter(
+            x=_eq_kc_sliced.index, y=_eq_kc_sliced.values,
+            mode="lines", name="KC Only",
+            line=dict(color="#FF7F0E", width=1.5, dash="dot"),
+        ))
+    _fig_eq.add_trace(go.Scatter(
+        x=_bnh_series.index, y=_bnh_series.values,
+        mode="lines", name="Buy & Hold",
+        line=dict(color="rgba(150,150,150,0.6)", width=1.5, dash="dash"),
+    ))
+    _fig_eq.update_layout(
+        xaxis=dict(type="date", tickformat="%b %Y"),
+        yaxis=dict(tickprefix="$", automargin=True),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=11)),
+        height=360,
+        margin=dict(l=10, r=10, t=40, b=10),
+    )
+    st.plotly_chart(_fig_eq, use_container_width=True)
+
+    # ── 3-way performance comparison ──────────────────────────────────────────
+    def _perf(final, trades_list, capital):
+        closed = [t for t in trades_list if t["Exit Date"] != "—"]
+        wins   = [t for t in closed if t["Return %"] > 0]
+        ret_pct = (final / capital - 1) * 100
+        wr = f"{len(wins)/len(closed)*100:.0f}%" if closed else "—"
+        return ret_pct, len(trades_list), wr
+
+    _r_cb, _n_cb, _w_cb = _perf(_cb_final, _cb_trades, _init_cap)
+    _r_bb, _n_bb, _w_bb = _perf(_bb_final, _bb_trades, _init_cap)
+    _r_kc, _n_kc, _w_kc = _perf(_kc_final, _kc_trades, _init_cap)
+    _bnh_ret = (_cb_df_full["Close"].iloc[-1] / _cb_df_full["Close"].iloc[0] - 1) * 100
+
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _m1.metric("Combined Return",  f"{_r_cb:+.1f}%",
+               f"${_cb_final:,.0f}  ·  {_n_cb} trades  ·  {_w_cb} win")
+    _m2.metric("BB-Only Return",   f"{_r_bb:+.1f}%",
+               f"${_bb_final:,.0f}  ·  {_n_bb} trades  ·  {_w_bb} win")
+    _m3.metric("KC-Only Return",   f"{_r_kc:+.1f}%",
+               f"${_kc_final:,.0f}  ·  {_n_kc} trades  ·  {_w_kc} win")
+    _m4.metric("Buy & Hold",       f"{_bnh_ret:+.1f}%",
+               f"${_cb_df_full['Close'].iloc[-1] / _cb_df_full['Close'].iloc[0] * _init_cap:,.0f}")
+
+    st.divider()
+
+    # ── Trade log ─────────────────────────────────────────────────────────────
+    st.markdown("### 📋 Combined Strategy Trade Log")
+    st.caption("Each trade shows which strategy (BB or KC) generated the signal based on the active regime at entry.")
+
+    if not _cb_trades:
+        st.info("No trades in the selected date range.")
+    else:
+        _cb_trade_df = pd.DataFrame(_cb_trades)
+        _cb_trade_df.insert(0, "#", range(1, len(_cb_trade_df) + 1))
+        # Re-order columns for readability
+        _col_order = ["#", "Strategy", "Entry Date", "Entry $",
+                      "Exit Date", "Exit $", "Exit Reason", "Return %", "Balance $"]
+        _cb_trade_df = _cb_trade_df[[c for c in _col_order if c in _cb_trade_df.columns]]
+        st.dataframe(_cb_trade_df, use_container_width=True, hide_index=True)
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    st.caption(
+        f"Data source: Yahoo Finance · "
+        f"{len(_cb_df):,} trading days shown · "
+        f"{_cb_df['Date'].iloc[0].date()} → {_cb_df['Date'].iloc[-1].date()}"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
