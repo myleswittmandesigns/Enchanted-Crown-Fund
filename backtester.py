@@ -1230,6 +1230,7 @@ ML_GAP_VALUES     = [5, 8, 10, 12, 15]           # Spacing between bands
 ML_K_VALUES       = [round(k * 0.1, 1) for k in range(15, 33)]  # [1.5 .. 3.2]
 ML_STOP_PCT_VALUES = [0.20, 0.30, 0.40, 0.50, 0.60]
 ML_MIN_TRADES     = 3                            # Lower floor — fewer trades expected
+ML_WF_TOP_COMBOS  = 200                          # Only top-N combos by Score enter walk-forward
 
 DATA_DIR = REPO_DIR / "data"
 
@@ -1340,20 +1341,16 @@ def run_multilookback(
 def walk_forward_ml(
     close_np: "np.ndarray",
     dates: pd.Series,
-    n_base_values: list,
-    gap_values: list,
-    k_values: list,
-    stop_values: list,
+    top_combos: list,           # [(n_base, gap, k, stop_pct), ...] — pre-filtered top-N
     train_years: int = 5,
     test_years: int  = 1,
     step_months: int = 6,
     wf_min_trades: int = 2,
 ) -> list:
-    """Walk-forward validation for multi-lookback strategy."""
-    import numpy as np
-
+    """Walk-forward validation — only evaluates the supplied top_combos per window."""
     windows = []
     t = dates.min()
+    first_combo = top_combos[0]
 
     while True:
         train_end_date = t + pd.DateOffset(years=train_years)
@@ -1370,9 +1367,8 @@ def walk_forward_ml(
 
         train_close = close_np[:train_end_idx]
 
-        # Precompute all unique N values for this training window
-        unique_ns = sorted({n for n_base in n_base_values
-                            for gap in gap_values
+        # Precompute only the N values needed by top_combos
+        unique_ns = sorted({n for n_base, gap, k, sp in top_combos
                             for n in [n_base, n_base + gap, n_base + 2 * gap]})
         ind_cache = {}
         for n in unique_ns:
@@ -1381,46 +1377,36 @@ def walk_forward_ml(
                 std = pd.Series(train_close).rolling(n).std(ddof=0).to_numpy()
                 ind_cache[n] = (sma, std)
 
-        best_score = -1.0
-        best_n_base = n_base_values[0]
-        best_gap    = gap_values[0]
-        best_k      = k_values[0]
-        best_stop   = stop_values[0]
+        best_score  = -1.0
+        best_n_base, best_gap, best_k, best_stop = first_combo
         best_train  = None
 
-        for n_base in n_base_values:
-            for gap in gap_values:
-                n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
-                if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
-                    continue
-                for k in k_values:
-                    sma1, std1 = ind_cache[n1]
-                    upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
-                    sma2, std2 = ind_cache[n2]
-                    upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
-                    sma3, std3 = ind_cache[n3]
-                    upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
+        for n_base, gap, k, stop_pct in top_combos:
+            n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+            if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
+                continue
+            sma1, std1 = ind_cache[n1]
+            upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
+            sma2, std2 = ind_cache[n2]
+            upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
+            sma3, std3 = ind_cache[n3]
+            upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
 
-                    for stop_pct in stop_values:
-                        r = run_multilookback(
-                            train_close,
-                            upper1, lower1, upper2, lower2, upper3, lower3,
-                            stop_pct, wf_min_trades,
-                        )
-                        if r and r["Score"] > best_score:
-                            best_score  = r["Score"]
-                            best_n_base = n_base
-                            best_gap    = gap
-                            best_k      = k
-                            best_stop   = stop_pct
-                            best_train  = r
+            r = run_multilookback(
+                train_close,
+                upper1, lower1, upper2, lower2, upper3, lower3,
+                stop_pct, wf_min_trades,
+            )
+            if r and r["Score"] > best_score:
+                best_score  = r["Score"]
+                best_n_base, best_gap, best_k, best_stop = n_base, gap, k, stop_pct
+                best_train  = r
 
-        # Run test period with best params
+        # Run test period with best params from this window
         test_close = close_np[:test_end_idx]
         n1, n2, n3 = best_n_base, best_n_base + best_gap, best_n_base + 2 * best_gap
-        unique_test_ns = {n1, n2, n3}
         test_cache = {}
-        for n in unique_test_ns:
+        for n in {n1, n2, n3}:
             sma = pd.Series(test_close).rolling(n).mean().to_numpy()
             std = pd.Series(test_close).rolling(n).std(ddof=0).to_numpy()
             test_cache[n] = (sma, std)
@@ -1467,87 +1453,108 @@ def walk_forward_ml(
     return windows
 
 
-def main_multilookback():
-    import numpy as np
+def _process_ticker_ml(ticker: str):
+    """Process one ticker — grid search + walk-forward. Called by Pool.map."""
     from itertools import product as iproduct
+
+    data_path = DATA_DIR / f"{ticker}_daily_high_low.csv"
+    if not data_path.exists():
+        return None
+
+    df_raw = (
+        pd.read_csv(data_path, parse_dates=["Date"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    close_np     = df_raw["Close"].to_numpy(dtype=float)
+    dates        = df_raw["Date"]
+    data_through = dates.max().strftime("%Y-%m-%d")
+    years        = (dates.max() - dates.min()).days / 365.25
+
+    print(f"  [{ticker}] {dates.min().date()} → {data_through}  ({len(df_raw):,} rows)", flush=True)
+
+    # Precompute all unique N values for the full grid
+    unique_ns = sorted({n for n_base in ML_N_BASE_VALUES
+                        for gap in ML_GAP_VALUES
+                        for n in [n_base, n_base + gap, n_base + 2 * gap]})
+    ind_cache = {}
+    for n in unique_ns:
+        sma = pd.Series(close_np).rolling(n).mean().to_numpy()
+        std = pd.Series(close_np).rolling(n).std(ddof=0).to_numpy()
+        ind_cache[n] = (sma, std)
+
+    combos = list(iproduct(ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES))
+    rows = []
+    for n_base, gap, k, stop_pct in combos:
+        n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+        if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
+            continue
+        sma1, std1 = ind_cache[n1]
+        upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
+        sma2, std2 = ind_cache[n2]
+        upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
+        sma3, std3 = ind_cache[n3]
+        upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
+
+        r = run_multilookback(
+            close_np, upper1, lower1, upper2, lower2, upper3, lower3,
+            stop_pct, ML_MIN_TRADES,
+        )
+        if r:
+            r.update({"Ticker": ticker, "N_base": n_base, "Gap": gap,
+                      "N1": n1, "N2": n2, "N3": n3, "K": k, "Stop %": stop_pct})
+            rows.append(r)
+
+    if not rows:
+        print(f"  [{ticker}] No valid results", flush=True)
+        return None
+
+    df_all = pd.DataFrame(rows)
+    df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
+    df_all["CAGR %"] = df_all["CAGR %"].round(1)
+
+    best = df_all.loc[df_all["Score"].idxmax()]
+    print(f"  [{ticker}] Best: N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])}) "
+          f"K={best['K']} Stop={best['Stop %']:.0%}  CAGR={best['CAGR %']:.1f}%  "
+          f"RDR={best['RDR']:.2f}  Trades={int(best['Trades'])}", flush=True)
+
+    # Walk-forward: only top ML_WF_TOP_COMBOS combos — ~100x fewer evaluations per window
+    top_combos = list(
+        df_all.nlargest(ML_WF_TOP_COMBOS, "Score")[["N_base", "Gap", "K", "Stop %"]]
+        .itertuples(index=False, name=None)
+    )
+    print(f"  [{ticker}] Walk-forward ({len(top_combos)} combos × windows)...", flush=True)
+    wf_windows = walk_forward_ml(close_np, dates, top_combos)
+    print(f"  [{ticker}] Walk-forward: {len(wf_windows)} windows done", flush=True)
+
+    return ticker, df_all, wf_windows, data_through, years
+
+
+def main_multilookback():
+    from multiprocessing import Pool, cpu_count
 
     run_date = datetime.today().strftime("%Y-%m-%d")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Multi-lookback backtester starting")
 
     tickers   = sorted(p.stem.replace("_daily_high_low", "") for p in DATA_DIR.glob("*_daily_high_low.csv"))
+    n_workers = min(cpu_count(), len(tickers))
+    print(f"  Tickers: {len(tickers)}  |  Workers: {n_workers}  |  Grid: {len(list(__import__('itertools').product(ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES))):,} combos  |  WF top-N: {ML_WF_TOP_COMBOS}")
+
+    with Pool(n_workers) as pool:
+        results_list = pool.map(_process_ticker_ml, tickers)
+
     all_results = {}
-
-    for ticker in tickers:
-        data_path = DATA_DIR / f"{ticker}_daily_high_low.csv"
-        df_raw    = (
-            pd.read_csv(data_path, parse_dates=["Date"])
-            .sort_values("Date")
-            .reset_index(drop=True)
-        )
-        close_np    = df_raw["Close"].to_numpy(dtype=float)
-        dates       = df_raw["Date"]
-        data_through = dates.max().strftime("%Y-%m-%d")
-        years        = (dates.max() - dates.min()).days / 365.25
-
-        print(f"\n  [{ticker}] {dates.min().date()} → {data_through}  ({len(df_raw):,} rows)")
-
-        # Precompute all unique N values across the entire grid
-        unique_ns = sorted({n for n_base in ML_N_BASE_VALUES
-                            for gap in ML_GAP_VALUES
-                            for n in [n_base, n_base + gap, n_base + 2 * gap]})
-        ind_cache = {}
-        for n in unique_ns:
-            sma = pd.Series(close_np).rolling(n).mean().to_numpy()
-            std = pd.Series(close_np).rolling(n).std(ddof=0).to_numpy()
-            ind_cache[n] = (sma, std)
-
-        combos = list(iproduct(ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES))
-        print(f"  Grid: {len(combos):,} combos  (N_base={ML_N_BASE_VALUES[0]}..{ML_N_BASE_VALUES[-1]}  gap={ML_GAP_VALUES}  K={ML_K_VALUES[0]}..{ML_K_VALUES[-1]}  Stop={[f'{s:.0%}' for s in ML_STOP_PCT_VALUES]})")
-
-        rows = []
-        for n_base, gap, k, stop_pct in combos:
-            n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
-            if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
-                continue
-            sma1, std1 = ind_cache[n1]
-            upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
-            sma2, std2 = ind_cache[n2]
-            upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
-            sma3, std3 = ind_cache[n3]
-            upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
-
-            r = run_multilookback(
-                close_np,
-                upper1, lower1, upper2, lower2, upper3, lower3,
-                stop_pct, ML_MIN_TRADES,
-            )
-            if r:
-                r.update({"Ticker": ticker, "N_base": n_base, "Gap": gap, "N1": n1, "N2": n2, "N3": n3, "K": k, "Stop %": stop_pct})
-                rows.append(r)
-
-        if not rows:
-            print(f"  No valid results for {ticker}")
-            continue
-
-        df_all = pd.DataFrame(rows)
-        df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
-        df_all["CAGR %"] = df_all["CAGR %"].round(1)
-
-        best = df_all.loc[df_all["Score"].idxmax()]
-        print(f"  Best: N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])}) K={best['K']} Stop={best['Stop %']:.0%}  →  RDR={best['RDR']:.2f}  CAGR={best['CAGR %']:.1f}%  Return={best['Total Return %']:.1f}%  Trades={int(best['Trades'])}")
-
-        # Walk-forward
-        print(f"  Running walk-forward ...")
-        wf_windows = walk_forward_ml(close_np, dates, ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES)
-        print(f"  Walk-forward: {len(wf_windows)} windows completed")
-
-        all_results[ticker] = {"df_all": df_all, "wf_windows": wf_windows, "data_through": data_through, "years": years}
+    for res in results_list:
+        if res is not None:
+            ticker, df_all, wf_windows, data_through, years = res
+            all_results[ticker] = {"df_all": df_all, "wf_windows": wf_windows,
+                                   "data_through": data_through, "years": years}
 
     if not all_results:
         print("No results to report.")
         return
 
-    # Write per-ticker HTML reports
+    # Write per-ticker HTML + CSV reports
     OUT_DIR.mkdir(exist_ok=True)
     for ticker, res in all_results.items():
         out_path = OUT_DIR / f"backtest_ml_{ticker}_{run_date}.html"
@@ -1555,9 +1562,12 @@ def main_multilookback():
             _build_ml_html(ticker, res["df_all"], res["wf_windows"], run_date, res["data_through"], res["years"]),
             encoding="utf-8"
         )
+        res["df_all"].to_csv(OUT_DIR / f"ml_{ticker}_{run_date}.csv", index=False)
+        pd.DataFrame(res["wf_windows"]).to_csv(OUT_DIR / f"ml_wf_{ticker}_{run_date}.csv", index=False)
         print(f"  Report: {out_path}")
 
-    # Summary across all tickers
+    # Cross-ticker summary CSV + console table
+    summary_rows = []
     print(f"\n{'='*60}")
     print(f"MULTI-LOOKBACK SUMMARY  ({run_date})")
     print(f"{'='*60}")
@@ -1565,9 +1575,31 @@ def main_multilookback():
         df = res["df_all"]
         best = df.loc[df["Score"].idxmax()]
         wf_pos = sum(1 for w in res["wf_windows"] if w.get("Test Return %") and w["Test Return %"] > 0)
+        wf_total = len(res["wf_windows"])
+        summary_rows.append({
+            "Ticker":          ticker,
+            "Best Score":      round(float(best["Score"]), 1),
+            "CAGR %":          round(float(best["CAGR %"]), 1),
+            "Total Return %":  round(float(best["Total Return %"]), 1),
+            "RDR":             round(float(best["RDR"]), 2),
+            "Win %":           round(float(best["Win %"]), 1),
+            "Max DD %":        round(float(best["Max Drawdown %"]), 1),
+            "Trades":          int(best["Trades"]),
+            "Avg Hold Days":   round(float(best["Avg Hold Days"]), 1),
+            "N1":              int(best["N1"]),
+            "N2":              int(best["N2"]),
+            "N3":              int(best["N3"]),
+            "K":               float(best["K"]),
+            "Stop %":          float(best["Stop %"]),
+            "WF Profitable":   f"{wf_pos}/{wf_total}",
+            "Data Through":    res["data_through"],
+        })
         print(f"  {ticker:6}  N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])})  K={best['K']}  Stop={best['Stop %']:.0%}  "
               f"CAGR={best['CAGR %']:.1f}%  RDR={best['RDR']:.2f}  "
-              f"Trades={int(best['Trades'])}  WF profitable: {wf_pos}/{len(res['wf_windows'])}")
+              f"Trades={int(best['Trades'])}  WF profitable: {wf_pos}/{wf_total}")
+
+    pd.DataFrame(summary_rows).to_csv(OUT_DIR / f"ml_summary_{run_date}.csv", index=False)
+    print(f"\n  Summary CSV: {OUT_DIR / f'ml_summary_{run_date}.csv'}")
 
 
 def _build_ml_html(ticker: str, df_all: pd.DataFrame, wf_windows: list,

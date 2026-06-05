@@ -31,8 +31,8 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt, tab_rules = st.tabs([
-    "📈 Bollinger", "⚙️ BB Backtest", "📋 Strategy Rules"
+tab_viz, tab_bt, tab_ml, tab_rules = st.tabs([
+    "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback", "📋 Strategy Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
@@ -1491,6 +1491,262 @@ with tab_bt:
 
         html_content = latest.read_text(encoding="utf-8")
         components.html(html_content, height=2400, scrolling=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MULTI-LOOKBACK TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_ml:
+    import plotly.subplots as psp
+
+    ML_DIR = Path(__file__).parent / "reports"
+
+    @st.cache_data(ttl=300)
+    def load_ml_data():
+        summary_files = sorted(ML_DIR.glob("ml_summary_*.csv"), reverse=True)
+        if not summary_files:
+            return None, {}, None
+        latest      = summary_files[0]
+        run_date_ml = latest.stem.replace("ml_summary_", "")
+        summary     = pd.read_csv(latest)
+        ticker_data = {}
+        for ticker in summary["Ticker"]:
+            gp = ML_DIR / f"ml_{ticker}_{run_date_ml}.csv"
+            wp = ML_DIR / f"ml_wf_{ticker}_{run_date_ml}.csv"
+            if gp.exists() and wp.exists():
+                ticker_data[ticker] = {
+                    "grid": pd.read_csv(gp),
+                    "wf":   pd.read_csv(wp),
+                }
+        return summary, ticker_data, run_date_ml
+
+    ml_summary, ml_ticker_data, ml_run_date = load_ml_data()
+
+    if ml_summary is None or ml_summary.empty:
+        st.info("No multi-lookback results yet. Run the backtester to generate them.")
+    else:
+        st.markdown(f"**Run:** `{ml_run_date}` &nbsp;·&nbsp; **Tickers:** {len(ml_summary)}", unsafe_allow_html=True)
+
+        # ── Portfolio Overview table ──────────────────────────────────────────
+        st.markdown("#### Portfolio Overview")
+
+        disp = ml_summary[[
+            "Ticker", "CAGR %", "Total Return %", "RDR", "Win %",
+            "Max DD %", "Trades", "WF Profitable", "N1", "N2", "N3", "K", "Stop %",
+        ]].copy()
+        disp["Stop %"] = (disp["Stop %"] * 100).round(0).astype(int).astype(str) + "%"
+
+        def _color_val(val, col):
+            if col == "CAGR %":
+                return "color:#1a7a3c" if isinstance(val, (int, float)) and val > 0 else "color:#c0392b"
+            if col == "RDR":
+                return "color:#1a7a3c" if isinstance(val, (int, float)) and val >= 5 else "color:#c0392b"
+            if col == "Max DD %":
+                return "color:#c0392b" if isinstance(val, (int, float)) and val > 30 else ""
+            return ""
+
+        styled = disp.style.format({
+            "CAGR %":         "{:.1f}%",
+            "Total Return %": "{:.1f}%",
+            "RDR":            "{:.2f}",
+            "Win %":          "{:.1f}%",
+            "Max DD %":       "{:.1f}%",
+            "K":              "{:.1f}",
+        }).apply(
+            lambda col: [_color_val(v, col.name) for v in col], axis=0
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True, height=min(400, 45 + 35 * len(disp)))
+
+        # ── Ticker drill-down ─────────────────────────────────────────────────
+        available_tickers = sorted(ml_ticker_data.keys())
+        if not available_tickers:
+            st.warning("Ticker-level CSV data not found — only summary is available.")
+        else:
+            selected_ml = st.selectbox("Drill into ticker:", available_tickers, key="ml_ticker_sel")
+            grid_df = ml_ticker_data[selected_ml]["grid"]
+            wf_df   = ml_ticker_data[selected_ml]["wf"]
+
+            best_row = grid_df.loc[grid_df["Score"].idxmax()]
+
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("CAGR",        f"{best_row['CAGR %']:.1f}%")
+            col2.metric("RDR",         f"{best_row['RDR']:.2f}")
+            col3.metric("Win Rate",    f"{best_row['Win %']:.1f}%")
+            col4.metric("Max DD",      f"{best_row['Max Drawdown %']:.1f}%")
+            col5.metric("Trades",      f"{int(best_row['Trades'])}")
+
+            sub_rs, sub_wf, sub_hm, sub_rr = st.tabs([
+                "Response Surface", "Walk-Forward", "Heatmap", "Risk / Reward"
+            ])
+
+            # ── Response Surface ──────────────────────────────────────────────
+            with sub_rs:
+                st.caption("Smooth curve = generalized parameter. Spiky = overfit. Flat = irrelevant.")
+
+                fig_rs = psp.make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=["N_base", "Gap", "K (std multiplier)", "Stop %"],
+                    vertical_spacing=0.18, horizontal_spacing=0.12,
+                )
+
+                params_surface = [
+                    ("N_base", "N_base", 1, 1),
+                    ("Gap",    "Gap",    1, 2),
+                    ("K",      "K",      2, 1),
+                    ("Stop %", "Stop %", 2, 2),
+                ]
+
+                for col_name, _, row, col in params_surface:
+                    grouped = grid_df.groupby(col_name)["Score"].max().reset_index()
+                    x_vals  = grouped[col_name]
+                    y_vals  = grouped["Score"]
+                    if col_name == "Stop %":
+                        x_vals = (x_vals * 100).round(0)
+                    fig_rs.add_trace(
+                        go.Scatter(
+                            x=x_vals, y=y_vals,
+                            mode="lines+markers",
+                            line=dict(width=2),
+                            marker=dict(size=6),
+                            showlegend=False,
+                            hovertemplate=f"{col_name}=%{{x}}<br>Max Score=%{{y:.1f}}<extra></extra>",
+                        ),
+                        row=row, col=col,
+                    )
+
+                fig_rs.update_layout(
+                    height=480, margin=dict(t=50, b=30, l=40, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+                fig_rs.update_yaxes(title_text="Max Score")
+                st.plotly_chart(fig_rs, use_container_width=True)
+
+            # ── Walk-Forward ──────────────────────────────────────────────────
+            with sub_wf:
+                st.caption("Train return = in-sample best. Test return = out-of-sample. Proportionality = generalization.")
+
+                wf_plot = wf_df.copy()
+                wf_plot["Window"] = wf_plot["Window"].astype(str)
+                wf_plot["Test Label"] = wf_plot["Test Start"] + "–" + wf_plot["Test End"]
+
+                fig_wf = go.Figure()
+                fig_wf.add_trace(go.Bar(
+                    x=wf_plot["Window"], y=wf_plot["Train Return %"],
+                    name="In-sample (train)",
+                    marker_color="#4c72b0",
+                    hovertemplate="Window %{x}<br>Train: %{y:.1f}%<extra></extra>",
+                ))
+                fig_wf.add_trace(go.Bar(
+                    x=wf_plot["Window"], y=wf_plot["Test Return %"],
+                    name="Out-of-sample (test)",
+                    marker_color=["#2ca02c" if v and v > 0 else "#d62728"
+                                  for v in wf_plot["Test Return %"]],
+                    hovertemplate="Window %{x}<br>Test: %{y:.1f}%<extra></extra>",
+                ))
+                fig_wf.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
+                fig_wf.update_layout(
+                    barmode="group", height=380,
+                    xaxis_title="Window #", yaxis_title="Return %",
+                    legend=dict(orientation="h", y=1.08),
+                    margin=dict(t=30, b=40, l=50, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+
+                # Annotate test CAGR above each bar
+                for _, r in wf_plot.iterrows():
+                    if pd.notna(r.get("Test CAGR %")):
+                        fig_wf.add_annotation(
+                            x=r["Window"], y=max(r["Test Return %"] or 0, 0) + 1,
+                            text=f"{r['Test CAGR %']:.1f}%",
+                            showarrow=False, font=dict(size=9, color="#2ca02c"),
+                            xanchor="center",
+                        )
+
+                st.plotly_chart(fig_wf, use_container_width=True)
+
+                st.dataframe(
+                    wf_df[["Window", "Train Start", "Train End", "Test Start", "Test End",
+                            "Best N_base", "Best Gap", "Best K", "Best Stop",
+                            "Train Return %", "Test Return %", "Test CAGR %", "Test Trades"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+            # ── Heatmap (N_base × Gap) ────────────────────────────────────────
+            with sub_hm:
+                st.caption("Best Score for each (N_base, Gap) pair — holding K and Stop at their optimum.")
+
+                hm_pivot = (
+                    grid_df.groupby(["N_base", "Gap"])["Score"]
+                    .max()
+                    .reset_index()
+                    .pivot(index="Gap", columns="N_base", values="Score")
+                )
+
+                fig_hm = go.Figure(go.Heatmap(
+                    z=hm_pivot.values,
+                    x=hm_pivot.columns.tolist(),
+                    y=[str(g) for g in hm_pivot.index.tolist()],
+                    colorscale="RdYlGn",
+                    colorbar=dict(title="Score", thickness=14),
+                    hovertemplate="N_base=%{x}<br>Gap=%{y}<br>Score=%{z:.1f}<extra></extra>",
+                ))
+                fig_hm.update_layout(
+                    height=280,
+                    xaxis=dict(title="N_base", tickfont=dict(size=10)),
+                    yaxis=dict(title="Gap", tickfont=dict(size=11)),
+                    margin=dict(t=20, b=50, l=50, r=20),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_hm, use_container_width=True)
+
+            # ── Risk / Reward scatter ─────────────────────────────────────────
+            with sub_rr:
+                st.caption("Each point is one parameter combination. Top-right = high return + low drawdown (ideal).")
+
+                sample = grid_df.sample(min(2000, len(grid_df)), random_state=42) if len(grid_df) > 2000 else grid_df
+
+                fig_rr = go.Figure(go.Scatter(
+                    x=sample["CAGR %"],
+                    y=sample["Max Drawdown %"],
+                    mode="markers",
+                    marker=dict(
+                        size=5,
+                        color=sample["RDR"],
+                        colorscale="RdYlGn",
+                        cmin=0, cmax=min(20, sample["RDR"].quantile(0.95)),
+                        colorbar=dict(title="RDR", thickness=14),
+                        opacity=0.6,
+                    ),
+                    text=[f"N=({r.N1:.0f},{r.N2:.0f},{r.N3:.0f}) K={r.K} Stop={r['Stop %']:.0%}<br>"
+                          f"CAGR={r['CAGR %']:.1f}% DD={r['Max Drawdown %']:.1f}% RDR={r['RDR']:.2f}"
+                          for _, r in sample.iterrows()],
+                    hoverinfo="text",
+                ))
+
+                # Mark the best combo
+                fig_rr.add_trace(go.Scatter(
+                    x=[best_row["CAGR %"]], y=[best_row["Max Drawdown %"]],
+                    mode="markers",
+                    marker=dict(size=14, color="gold", symbol="star",
+                                line=dict(color="black", width=1)),
+                    name="Best (Score)",
+                    hovertemplate=(
+                        f"Best combo<br>N=({int(best_row.N1)},{int(best_row.N2)},{int(best_row.N3)})"
+                        f" K={best_row.K}<br>"
+                        f"CAGR={best_row['CAGR %']:.1f}%  DD={best_row['Max Drawdown %']:.1f}%"
+                        f"  RDR={best_row['RDR']:.2f}<extra></extra>"
+                    ),
+                ))
+
+                fig_rr.update_layout(
+                    height=420,
+                    xaxis_title="CAGR %",
+                    yaxis_title="Max Drawdown %",
+                    legend=dict(orientation="h", y=1.05),
+                    margin=dict(t=30, b=50, l=60, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_rr, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
