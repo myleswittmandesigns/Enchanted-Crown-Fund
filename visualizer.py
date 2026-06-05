@@ -1474,24 +1474,39 @@ if False:  # ARCHIVED — re-enable by restoring tab_combined to st.tabs() call
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_bt:
     REPORTS_DIR = Path(__file__).parent / "reports"
-    reports = sorted(
-        [r for r in REPORTS_DIR.glob("backtest_*.html") if "keltner" not in r.name],
-        reverse=True
-    )
 
-    if not reports:
-        st.info("No backtest report found. Run `python backtester.py` locally to generate one.")
-    else:
-        latest = reports[0]
-        st.markdown(f"**Report:** `{latest.name}`")
+    # Per-ticker Bollinger reports: backtest_bb_<TICKER>.html (one per universe name)
+    bb_reports = {
+        r.stem.replace("backtest_bb_", ""): r
+        for r in sorted(REPORTS_DIR.glob("backtest_bb_*.html"))
+    }
 
-        if len(reports) > 1:
-            names  = [r.name for r in reports]
-            chosen = st.selectbox("Load a different report:", names, index=0)
-            latest = REPORTS_DIR / chosen
-
-        html_content = latest.read_text(encoding="utf-8")
+    if bb_reports:
+        st.caption("Single-ticker Bollinger Band mean-reversion grid search. "
+                   "Pick any ticker in the universe — reports are precomputed in CI.")
+        tickers_bb = sorted(bb_reports)
+        chosen = st.selectbox("Ticker:", tickers_bb, index=0, key="bb_ticker_sel")
+        report = bb_reports[chosen]
+        html_content = report.read_text(encoding="utf-8")
         components.html(html_content, height=2400, scrolling=True)
+    else:
+        # Fallback to legacy single (dated) report naming if present
+        legacy = sorted(
+            [r for r in REPORTS_DIR.glob("backtest_*.html")
+             if "keltner" not in r.name and not r.name.startswith("backtest_bb_")],
+            reverse=True
+        )
+        if legacy:
+            latest = legacy[0]
+            st.markdown(f"**Report:** `{latest.name}`")
+            if len(legacy) > 1:
+                names  = [r.name for r in legacy]
+                pick   = st.selectbox("Load a different report:", names, index=0)
+                latest = REPORTS_DIR / pick
+            components.html(latest.read_text(encoding="utf-8"), height=2400, scrolling=True)
+        else:
+            st.info("No Bollinger reports yet. The backtester generates one per "
+                    "ticker (backtest_bb_<ticker>.html) on its next run.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

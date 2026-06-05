@@ -562,7 +562,7 @@ def _build_hotspot_html(hotspots: list) -> str:
 def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
                run_date: str, data_through: str, params: dict,
                n_values: list = None, k_values: list = None,
-               stop_values: list = None) -> str:
+               stop_values: list = None, ticker: str = "GSIT") -> str:
     RDR_THRESHOLD   = params["RDR_THRESHOLD"]
     MIN_TRADES      = params["MIN_TRADES"]
     CAGR_THRESHOLD  = params["CAGR_THRESHOLD"]
@@ -608,7 +608,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>GSIT Backtest — {run_date}</title>
+<title>{ticker} Backtest — {run_date}</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           max-width: 100%; margin: 2rem auto; padding: 0 1.5rem; color: #222; }}
@@ -690,7 +690,7 @@ def build_html(df: pd.DataFrame, df_all: pd.DataFrame, wf_windows: list,
 </style>
 </head>
 <body>
-<h1>📊 GSIT Mean Reversion — Backtest Report</h1>
+<h1>📊 {ticker} Mean Reversion — Backtest Report</h1>
 <div class="meta">
   Run: {run_date} &nbsp;·&nbsp;
   Data through: {data_through} &nbsp;·&nbsp;
@@ -929,6 +929,102 @@ def main():
     print(f"  Valid results: {len(out)}  |  RDR ≥ {RDR_THRESHOLD}: {good_count}")
     print(f"  Top result: N={int(best['N'])} K={best['K']} Stop={best['Stop %']:.0%}  →  RDR={best['RDR']:.2f}  Final=${best['Final Balance $']:,.2f}  Return={best['Total Return %']:.1f}%  (initial: ${INITIAL_CAPITAL:,})")
     print(f"  Report: {out_path}")
+
+
+def _process_ticker_bb(ticker: str):
+    """Single-ticker Bollinger grid search + walk-forward. Called by Pool.map.
+
+    Returns (ticker, out_df, df_all, wf_windows, data_through) or None.
+    """
+    params = load_strategy_params()
+    MIN_TRADES     = params["MIN_TRADES"]
+    RDR_THRESHOLD  = params["RDR_THRESHOLD"]
+    CAGR_THRESHOLD = params["CAGR_THRESHOLD"]
+
+    path = DATA_DIR / f"{ticker}_daily_high_low.csv"
+    if not path.exists():
+        return None
+    df_raw = (
+        pd.read_csv(path, parse_dates=["Date"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    close        = df_raw["Close"]
+    data_through = df_raw["Date"].max().strftime("%Y-%m-%d")
+
+    combos    = list(product(N_VALUES, K_VALUES, STOP_PCT_VALUES))
+    ind_cache = {n: bollinger_base(close, n) for n in N_VALUES}
+
+    results = []
+    for n, k, stop_pct in combos:
+        sma, std = ind_cache[n]
+        upper    = sma + k * std
+        lower    = sma - k * std
+        r = run(close, n, k, stop_pct, MIN_TRADES, _precomp=(sma, upper, lower))
+        if r:
+            results.append(r)
+    if not results:
+        print(f"  [{ticker}] no valid BB results", flush=True)
+        return None
+
+    years  = (df_raw["Date"].max() - df_raw["Date"].min()).days / 365.25
+    df_all = pd.DataFrame(results)
+    df_all["CAGR %"] = (((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100).round(1)
+    out = (
+        df_all
+        .query("RDR >= @RDR_THRESHOLD and `CAGR %` >= @CAGR_THRESHOLD")
+        .sort_values("Score", ascending=False)
+        .reset_index(drop=True)
+    )
+    wf_windows = walk_forward(df_raw, params, N_VALUES, K_VALUES, STOP_PCT_VALUES)
+    print(f"  [{ticker}] BB grid {len(combos):,} → {len(out)} valid | WF {len(wf_windows)} windows", flush=True)
+    return ticker, out, df_all, wf_windows, data_through
+
+
+def main_bb_all():
+    """Run the single-ticker Bollinger backtest for EVERY ticker in the universe,
+    writing one report per ticker (backtest_bb_<ticker>.html) so the app's
+    'BB Backtest' tab can offer a ticker dropdown. Heavy compute stays in CI."""
+    from multiprocessing import Pool, cpu_count
+
+    run_date = datetime.today().strftime("%Y-%m-%d")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Per-ticker Bollinger backtester starting")
+
+    tickers   = sorted(p.stem.replace("_daily_high_low", "") for p in DATA_DIR.glob("*_daily_high_low.csv"))
+    n_workers = max(1, min(cpu_count(), len(tickers)))
+    print(f"  Tickers: {len(tickers)}  |  Workers: {n_workers}  |  Grid/ticker: {len(N_VALUES)*len(K_VALUES)*len(STOP_PCT_VALUES):,} combos")
+
+    with Pool(n_workers) as pool:
+        results_list = pool.map(_process_ticker_bb, tickers)
+
+    params   = load_strategy_params()
+    OUT_DIR.mkdir(exist_ok=True)
+    summary  = []
+    for res in results_list:
+        if res is None:
+            continue
+        ticker, out, df_all, wf_windows, data_through = res
+        html = build_html(out, df_all, wf_windows, run_date, data_through, params,
+                          stop_values=STOP_PCT_VALUES, ticker=ticker)
+        (OUT_DIR / f"backtest_bb_{ticker}.html").write_text(html, encoding="utf-8")
+        if len(out):
+            best = out.iloc[0]
+            wf_pos = sum(1 for w in wf_windows if w.get("Test Return %") and w["Test Return %"] > 0)
+            summary.append({
+                "Ticker": ticker, "N": int(best["N"]), "K": float(best["K"]),
+                "Stop %": float(best["Stop %"]), "CAGR %": round(float(best["CAGR %"]), 1),
+                "Total Return %": round(float(best["Total Return %"]), 1),
+                "RDR": round(float(best["RDR"]), 2), "Win %": round(float(best["Win %"]), 1),
+                "Max DD %": round(float(best["Max Drawdown %"]), 1), "Trades": int(best["Trades"]),
+                "WF Profitable": f"{wf_pos}/{len(wf_windows)}", "Data Through": data_through,
+            })
+
+    if summary:
+        pd.DataFrame(summary).sort_values("CAGR %", ascending=False).to_csv(
+            OUT_DIR / f"bb_summary_{run_date}.csv", index=False)
+        print(f"  Wrote {len(summary)} per-ticker BB reports + bb_summary_{run_date}.csv")
+    else:
+        print("  No BB results to report.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2079,7 +2175,7 @@ def main_cross_sectional():
 
 
 if __name__ == "__main__":
-    main()
-    # main_keltner()  # ARCHIVED — KC results not yet high-confidence
+    main_bb_all()      # per-ticker Bollinger reports (BB Backtest tab dropdown)
+    # main_keltner()   # ARCHIVED — KC results not yet high-confidence
     main_multilookback()
     main_cross_sectional()
