@@ -1502,6 +1502,17 @@ with tab_ml:
 
     ML_DIR = Path(__file__).parent / "reports"
 
+    def _safe_read_csv(path):
+        """Read a CSV, returning an empty DataFrame if the file is empty/headerless.
+
+        Walk-forward files can be empty for post-IPO tickers that lack enough
+        history for any window — pandas raises EmptyDataError on those.
+        """
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+
     @st.cache_data(ttl=300)
     def load_ml_data():
         summary_files = sorted(ML_DIR.glob("ml_summary_*.csv"), reverse=True)
@@ -1516,8 +1527,8 @@ with tab_ml:
             wp = ML_DIR / f"ml_wf_{ticker}_{run_date_ml}.csv"
             if gp.exists() and wp.exists():
                 ticker_data[ticker] = {
-                    "grid": pd.read_csv(gp),
-                    "wf":   pd.read_csv(wp),
+                    "grid": _safe_read_csv(gp),
+                    "wf":   _safe_read_csv(wp),
                 }
         return summary, ticker_data, run_date_ml
 
@@ -1626,51 +1637,58 @@ with tab_ml:
             with sub_wf:
                 st.caption("Train return = in-sample best. Test return = out-of-sample. Proportionality = generalization.")
 
-                wf_plot = wf_df.copy()
-                wf_plot["Window"] = wf_plot["Window"].astype(str)
-                wf_plot["Test Label"] = wf_plot["Test Start"] + "–" + wf_plot["Test End"]
+                if wf_df.empty or "Window" not in wf_df.columns:
+                    st.info(
+                        f"No walk-forward windows for **{selected_ml}** — likely a "
+                        "post-2016 IPO with too little history to fill any "
+                        "train/test window."
+                    )
+                else:
+                    wf_plot = wf_df.copy()
+                    wf_plot["Window"] = wf_plot["Window"].astype(str)
+                    wf_plot["Test Label"] = wf_plot["Test Start"] + "–" + wf_plot["Test End"]
 
-                fig_wf = go.Figure()
-                fig_wf.add_trace(go.Bar(
-                    x=wf_plot["Window"], y=wf_plot["Train Return %"],
-                    name="In-sample (train)",
-                    marker_color="#4c72b0",
-                    hovertemplate="Window %{x}<br>Train: %{y:.1f}%<extra></extra>",
-                ))
-                fig_wf.add_trace(go.Bar(
-                    x=wf_plot["Window"], y=wf_plot["Test Return %"],
-                    name="Out-of-sample (test)",
-                    marker_color=["#2ca02c" if v and v > 0 else "#d62728"
-                                  for v in wf_plot["Test Return %"]],
-                    hovertemplate="Window %{x}<br>Test: %{y:.1f}%<extra></extra>",
-                ))
-                fig_wf.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
-                fig_wf.update_layout(
-                    barmode="group", height=380,
-                    xaxis_title="Window #", yaxis_title="Return %",
-                    legend=dict(orientation="h", y=1.08),
-                    margin=dict(t=30, b=40, l=50, r=20),
-                    plot_bgcolor="#fafafa", paper_bgcolor="white",
-                )
+                    fig_wf = go.Figure()
+                    fig_wf.add_trace(go.Bar(
+                        x=wf_plot["Window"], y=wf_plot["Train Return %"],
+                        name="In-sample (train)",
+                        marker_color="#4c72b0",
+                        hovertemplate="Window %{x}<br>Train: %{y:.1f}%<extra></extra>",
+                    ))
+                    fig_wf.add_trace(go.Bar(
+                        x=wf_plot["Window"], y=wf_plot["Test Return %"],
+                        name="Out-of-sample (test)",
+                        marker_color=["#2ca02c" if v and v > 0 else "#d62728"
+                                      for v in wf_plot["Test Return %"]],
+                        hovertemplate="Window %{x}<br>Test: %{y:.1f}%<extra></extra>",
+                    ))
+                    fig_wf.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
+                    fig_wf.update_layout(
+                        barmode="group", height=380,
+                        xaxis_title="Window #", yaxis_title="Return %",
+                        legend=dict(orientation="h", y=1.08),
+                        margin=dict(t=30, b=40, l=50, r=20),
+                        plot_bgcolor="#fafafa", paper_bgcolor="white",
+                    )
 
-                # Annotate test CAGR above each bar
-                for _, r in wf_plot.iterrows():
-                    if pd.notna(r.get("Test CAGR %")):
-                        fig_wf.add_annotation(
-                            x=r["Window"], y=max(r["Test Return %"] or 0, 0) + 1,
-                            text=f"{r['Test CAGR %']:.1f}%",
-                            showarrow=False, font=dict(size=9, color="#2ca02c"),
-                            xanchor="center",
-                        )
+                    # Annotate test CAGR above each bar
+                    for _, r in wf_plot.iterrows():
+                        if pd.notna(r.get("Test CAGR %")):
+                            fig_wf.add_annotation(
+                                x=r["Window"], y=max(r["Test Return %"] or 0, 0) + 1,
+                                text=f"{r['Test CAGR %']:.1f}%",
+                                showarrow=False, font=dict(size=9, color="#2ca02c"),
+                                xanchor="center",
+                            )
 
-                st.plotly_chart(fig_wf, use_container_width=True)
+                    st.plotly_chart(fig_wf, use_container_width=True)
 
-                st.dataframe(
-                    wf_df[["Window", "Train Start", "Train End", "Test Start", "Test End",
-                            "Best N_base", "Best Gap", "Best K", "Best Stop",
-                            "Train Return %", "Test Return %", "Test CAGR %", "Test Trades"]],
-                    use_container_width=True, hide_index=True,
-                )
+                    st.dataframe(
+                        wf_df[["Window", "Train Start", "Train End", "Test Start", "Test End",
+                                "Best N_base", "Best Gap", "Best K", "Best Stop",
+                                "Train Return %", "Test Return %", "Test CAGR %", "Test Trades"]],
+                        use_container_width=True, hide_index=True,
+                    )
 
             # ── Heatmap (N_base × Gap) ────────────────────────────────────────
             with sub_hm:
@@ -1769,7 +1787,12 @@ with tab_cs:
 
         def _read(prefix):
             p = CS_DIR / f"{prefix}_{run_date}.csv"
-            return pd.read_csv(p) if p.exists() else None
+            if not p.exists():
+                return None
+            try:
+                return pd.read_csv(p)
+            except pd.errors.EmptyDataError:
+                return None
 
         return {
             "run_date": run_date,
