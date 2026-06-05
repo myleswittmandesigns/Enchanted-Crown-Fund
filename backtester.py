@@ -1895,11 +1895,34 @@ def walk_forward_cs(dates, sma_cache, std_cache, compz_cache, top_combos,
 
 # Module-level handle so the band-builder can see the aligned close matrix
 close_mat_g = None
+# Shared read-only arrays for the grid workers. Set once in the parent before the
+# Pool is forked; fork children inherit them copy-on-write (never pickled per task).
+_cs_sma_g   = None
+_cs_std_g   = None
+_cs_compz_g = None
+
+
+def _cs_grid_worker(combo):
+    """Evaluate one (N_base, gap, K, stop) combo. Reads the shared close matrix and
+    SMA/STD/compz caches from fork-inherited module globals, so only the tiny combo
+    tuple and the small result dict cross the process boundary."""
+    n_base, gap, k, stop_pct = combo
+    n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+    lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(_cs_sma_g, _cs_std_g, n1, n2, n3, k)
+    compz  = _cs_compz_g[(n_base, gap)]
+    n_days = close_mat_g.shape[0]
+    r = run_cross_sectional(close_mat_g, lo1, lo2, lo3, up1, up2, up3, compz, em,
+                            stop_pct, max(n3, 1), n_days, CS_MIN_TRADES)
+    if not r:
+        return None
+    r.update({"N_base": n_base, "Gap": gap, "N1": n1, "N2": n2, "N3": n3,
+              "K": k, "Stop %": stop_pct})
+    return r
 
 
 def main_cross_sectional():
     import numpy as np
-    global close_mat_g
+    global close_mat_g, _cs_sma_g, _cs_std_g, _cs_compz_g
 
     run_date = datetime.today().strftime("%Y-%m-%d")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cross-sectional single-position backtester starting")
@@ -1929,21 +1952,31 @@ def main_cross_sectional():
             z3 = (close_mat - sma_cache[n3]) / std_cache[n3]
             compz_cache[(n_base, gap)] = (z1 + z2 + z3) / 3.0
 
-    combos = list(product(CS_N_BASE_VALUES, CS_GAP_VALUES, CS_K_VALUES, CS_STOP_PCT_VALUES))
-    print(f"  Global grid: {len(combos):,} combos  |  one portfolio sim each")
+    # Publish shared arrays to module globals so forked grid workers inherit them.
+    _cs_sma_g, _cs_std_g, _cs_compz_g = sma_cache, std_cache, compz_cache
 
-    rows = []
-    for n_base, gap, k, stop_pct in combos:
-        n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
-        first_valid = n3                       # warmup for largest band
-        lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(sma_cache, std_cache, n1, n2, n3, k)
-        compz = compz_cache[(n_base, gap)]
-        r = run_cross_sectional(close_mat, lo1, lo2, lo3, up1, up2, up3, compz, em,
-                                stop_pct, max(first_valid, 1), n_days, CS_MIN_TRADES)
-        if r:
-            r.update({"N_base": n_base, "Gap": gap, "N1": n1, "N2": n2, "N3": n3,
-                      "K": k, "Stop %": stop_pct})
-            rows.append(r)
+    combos = list(product(CS_N_BASE_VALUES, CS_GAP_VALUES, CS_K_VALUES, CS_STOP_PCT_VALUES))
+
+    # Parallelize the grid via fork (copy-on-write shares the big caches for free).
+    # Serial fallback on platforms without fork (e.g. Windows) keeps it correct.
+    import multiprocessing as mp
+    from multiprocessing import cpu_count
+    try:
+        ctx = mp.get_context("fork")
+        parallel = True
+    except ValueError:
+        parallel = False
+
+    if parallel:
+        n_workers = max(1, min(cpu_count(), 8))
+        chunk     = max(1, len(combos) // (n_workers * 8))
+        print(f"  Global grid: {len(combos):,} combos  |  {n_workers} fork workers  |  chunksize {chunk}")
+        with ctx.Pool(n_workers) as pool:
+            results = pool.map(_cs_grid_worker, combos, chunksize=chunk)
+        rows = [r for r in results if r]
+    else:
+        print(f"  Global grid: {len(combos):,} combos  |  serial (fork unavailable)")
+        rows = [r for r in (_cs_grid_worker(c) for c in combos) if r]
 
     if not rows:
         print("  No valid cross-sectional results.")
