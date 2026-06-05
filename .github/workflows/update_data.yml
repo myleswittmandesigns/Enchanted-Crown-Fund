@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas tqdm matplotlib
+        run: pip install massive pandas tqdm matplotlib resend
 
       - name: Configure git
         run: |
@@ -55,9 +55,7 @@ jobs:
 
       - name: Send daily summary email
         env:
-          SMTP_HOST:    ${{ secrets.SMTP_HOST }}
-          SMTP_PORT:    ${{ secrets.SMTP_PORT }}
-          SMTP_USER:    ${{ secrets.SMTP_USER }}
-          SMTP_PASS:    ${{ secrets.SMTP_PASS }}
-          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM:    ${{ secrets.RESEND_FROM }}
+          NOTIFY_EMAIL:   ${{ secrets.NOTIFY_EMAIL }}
         run: python send_summary_email.py
