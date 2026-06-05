@@ -31,9 +31,11 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_kc_viz, tab_combined, tab_bt, tab_kc_bt, tab_rules = st.tabs([
-    "📈 Bollinger", "📈 Keltner", "🔀 Combined", "⚙️ BB Backtest", "⚙️ KC Backtest", "📋 Strategy Rules"
+tab_viz, tab_bt, tab_rules = st.tabs([
+    "📈 Bollinger", "⚙️ BB Backtest", "📋 Strategy Rules"
 ])
+# ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
+# tab_kc_viz, tab_combined, tab_kc_bt
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VISUALIZER TAB
@@ -486,9 +488,9 @@ with tab_viz:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KELTNER CHANNEL VISUALIZER TAB
+# KELTNER CHANNEL VISUALIZER TAB  [ARCHIVED]
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_kc_viz:
+if False:  # ARCHIVED — re-enable by restoring tab_kc_viz to st.tabs() call
 
     # ── Load KC parameters from STRATEGY_RULES.md ────────────────────────────
     def load_kc_params_viz() -> dict:
@@ -951,9 +953,9 @@ with tab_kc_viz:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMBINED STRATEGY TAB
+# COMBINED STRATEGY TAB  [ARCHIVED]
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_combined:
+if False:  # ARCHIVED — re-enable by restoring tab_combined to st.tabs() call
 
     # ── Load params from STRATEGY_RULES.md ───────────────────────────────────
     def _load_combined_params() -> dict:
@@ -1492,9 +1494,9 @@ with tab_bt:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KC BACKTESTER TAB
+# KC BACKTESTER TAB  [ARCHIVED]
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_kc_bt:
+if False:  # ARCHIVED — re-enable by restoring tab_kc_bt to st.tabs() call
     KC_REPORTS_DIR = Path(__file__).parent / "reports"
     kc_reports = sorted(KC_REPORTS_DIR.glob("backtest_keltner_*.html"), reverse=True)
     if not kc_reports:
