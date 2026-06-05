@@ -31,12 +31,259 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt, tab_ml, tab_cs, tab_rs, tab_rules = st.tabs([
-    "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback",
+tab_daily, tab_viz, tab_bt, tab_ml, tab_cs, tab_rs, tab_rules = st.tabs([
+    "📅 Daily Signal", "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback",
     "🎯 Cross-Sectional", "🔬 Response Surface", "📋 Strategy Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DAILY SIGNAL TAB  — live z-score ranking, current position, buy candidate
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_daily:
+
+    DAILY_DATA_DIR     = Path(__file__).parent / "data"
+    DAILY_REPORTS_DIR  = Path(__file__).parent / "reports"
+
+    @st.cache_data(ttl=300)
+    def load_daily_signal():
+        """Load current CS signal and model params from latest summary files."""
+        sig_files = sorted(DAILY_REPORTS_DIR.glob("cs_signal_*.csv"),   reverse=True)
+        sum_files = sorted(DAILY_REPORTS_DIR.glob("cs_summary_*.csv"),  reverse=True)
+        trd_files = sorted(DAILY_REPORTS_DIR.glob("cs_trades_*.csv"),   reverse=True)
+        if not sig_files or not sum_files:
+            return None, None, None
+        try:
+            sig = pd.read_csv(sig_files[0])
+            smr = pd.read_csv(sum_files[0])
+            trd = pd.read_csv(trd_files[0]) if trd_files else pd.DataFrame()
+            return sig, smr, trd
+        except Exception:
+            return None, None, None
+
+    @st.cache_data(ttl=300)
+    def compute_zscores_live(n1: int, n2: int, n3: int):
+        """Read all ticker CSVs and compute today's composite z-score ranking."""
+        rows = []
+        for p in sorted(DAILY_DATA_DIR.glob("*_daily_high_low.csv")):
+            ticker = p.stem.replace("_daily_high_low", "")
+            try:
+                df    = pd.read_csv(p, parse_dates=["Date"]).sort_values("Date").reset_index(drop=True)
+                close = df["Close"].astype(float)
+                if close.isna().all():
+                    continue
+                last_close = float(close.dropna().iloc[-1])
+                last_date  = df["Date"].iloc[-1].strftime("%Y-%m-%d")
+                zs, below = [], []
+                valid = True
+                for n in [n1, n2, n3]:
+                    sma = close.rolling(n).mean()
+                    std = close.rolling(n).std()
+                    if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]) or std.iloc[-1] == 0:
+                        valid = False; break
+                    z = (close.iloc[-1] - sma.iloc[-1]) / std.iloc[-1]
+                    zs.append(float(z))
+                    below.append(bool(z < 0))
+                if not valid:
+                    continue
+                rows.append({
+                    "Ticker":      ticker,
+                    "Close":       round(last_close, 2),
+                    "As Of":       last_date,
+                    f"Z({n1})":    round(zs[0], 3),
+                    f"Z({n2})":    round(zs[1], 3),
+                    f"Z({n3})":    round(zs[2], 3),
+                    "Composite Z": round(float(np.mean(zs)), 3),
+                    "# Windows Below Mean": sum(below),
+                })
+            except Exception:
+                continue
+
+        df_z = pd.DataFrame(rows).sort_values("Composite Z").reset_index(drop=True)
+        df_z.insert(0, "Rank", range(1, len(df_z) + 1))
+        return df_z
+
+    sig_df, smr_df, trd_df = load_daily_signal()
+
+    if sig_df is None or smr_df is None:
+        st.info("No cross-sectional results found. Run the backtester to generate a signal.")
+    else:
+        smr = smr_df.iloc[0]
+        n1_cs = int(smr["N1"]); n2_cs = int(smr["N2"]); n3_cs = int(smr["N3"])
+        k_cs  = float(smr["K"])
+        sig   = sig_df.iloc[0]
+
+        # ── Header ────────────────────────────────────────────────────────────
+        from datetime import date as _date
+        today_str = _date.today().strftime("%B %d, %Y")
+        st.markdown(f"## 📅 Daily Signal — {today_str}")
+        st.caption(
+            f"Cross-sectional model · Windows N = {n1_cs}, {n2_cs}, {n3_cs} · "
+            f"K = {k_cs} · Entry: lowest composite z-score across all windows"
+        )
+
+        # ── Compute live z-scores ─────────────────────────────────────────────
+        df_z = compute_zscores_live(n1_cs, n2_cs, n3_cs)
+        n_valid = len(df_z)
+
+        # ── Current position block ────────────────────────────────────────────
+        state  = str(sig.get("State", "FLAT")).upper()
+        ticker = str(sig.get("Ticker", "—"))
+
+        if state == "HOLDING":
+            entry_date   = sig.get("Entry Date", "—")
+            entry_price  = sig.get("Entry $",    0.0)
+            last_price   = sig.get("Last $",     0.0)
+            unreal_pct   = sig.get("Unrealized %", 0.0)
+            color_badge  = "🟡" if float(unreal_pct) >= 0 else "🔴"
+            cur_rank_row = df_z[df_z["Ticker"] == ticker]
+            cur_rank     = int(cur_rank_row["Rank"].iloc[0]) if not cur_rank_row.empty else "?"
+            cur_z        = float(cur_rank_row["Composite Z"].iloc[0]) if not cur_rank_row.empty else float("nan")
+
+            st.markdown(f"### {color_badge} Current Position")
+            p1, p2, p3, p4, p5 = st.columns(5)
+            p1.metric("Ticker",          ticker)
+            p2.metric("Entry Date",      entry_date)
+            p3.metric("Entry Price",     f"${float(entry_price):.2f}")
+            p4.metric("Last Price",      f"${float(last_price):.2f}",
+                      delta=f"{float(unreal_pct):+.2f}%")
+            p5.metric("Today's Rank",    f"#{cur_rank} / {n_valid}",
+                      help="Lower rank = more oversold = closer to entry signal")
+            st.caption(
+                f"Holding since {entry_date}. "
+                f"Today's composite z-score for {ticker}: **{cur_z:.3f}**. "
+                f"Ranked #{cur_rank} of {n_valid} tickers (1 = most oversold). "
+                "The model holds until price crosses the upper band or stop loss triggers — "
+                "a lower-ranked ticker today does **not** trigger a switch."
+            )
+        else:
+            st.markdown("### ⚪ No Current Position")
+            st.info("The model is flat. If the top-ranked ticker is below the entry threshold, a buy signal is active.")
+
+        st.divider()
+
+        # ── Today's top candidate ─────────────────────────────────────────────
+        st.markdown("### 🎯 Today's Top Buy Candidate")
+
+        top = df_z.iloc[0]
+        top_ticker = top["Ticker"]
+        top_z      = top["Composite Z"]
+        z_col1     = f"Z({n1_cs})"
+        z_col2     = f"Z({n2_cs})"
+        z_col3     = f"Z({n3_cs})"
+        entry_threshold = -k_cs
+
+        if top_z <= entry_threshold:
+            signal_label = "🚨 ACTIVE BUY SIGNAL"
+            signal_color = "#d62728"
+        elif top_z <= entry_threshold * 0.7:
+            signal_label = "⚠️ APPROACHING ENTRY"
+            signal_color = "#ff7f0e"
+        else:
+            signal_label = "👀 WATCHING — not yet at entry threshold"
+            signal_color = "#7f7f7f"
+
+        st.markdown(
+            f"<h4 style='color:{signal_color}'>{signal_label}</h4>",
+            unsafe_allow_html=True,
+        )
+
+        t1, t2, t3, t4, t5, t6 = st.columns(6)
+        t1.metric("Ticker",         top_ticker)
+        t2.metric("Close",          f"${top['Close']:.2f}")
+        t3.metric("Composite Z",    f"{top_z:.3f}",
+                  help="Average z-score across all 3 lookback windows. More negative = more oversold.")
+        t4.metric(f"Z({n1_cs})",    f"{top[z_col1]:.3f}")
+        t5.metric(f"Z({n2_cs})",    f"{top[z_col2]:.3f}")
+        t6.metric(f"Z({n3_cs})",    f"{top[z_col3]:.3f}")
+
+        # Why explanation
+        windows_below = top["# Windows Below Mean"]
+        why_parts = []
+        if top_z < entry_threshold:
+            why_parts.append(f"composite z-score of **{top_z:.3f}** is below the entry threshold of **{entry_threshold:.2f}**")
+        if windows_below == 3:
+            why_parts.append("price is **below the mean on all 3 lookback windows** (strongest possible consensus)")
+        elif windows_below == 2:
+            why_parts.append("price is below the mean on 2 of 3 lookback windows")
+        else:
+            why_parts.append("it has the lowest composite z-score in the universe today")
+        why_parts.append(f"ranked **#1 of {n_valid} valid tickers**")
+
+        st.markdown("**Why:** " + ", and ".join(why_parts) + ".")
+
+        st.divider()
+
+        # ── Full ranking chart ─────────────────────────────────────────────────
+        st.markdown("### 📊 Full Universe Ranking — Today")
+        st.caption(
+            "Lower composite z-score = more oversold. "
+            f"Entry threshold = {entry_threshold:.2f} (K = {k_cs}). "
+            "Tickers left of the red line are at or beyond the entry threshold."
+        )
+
+        # Color bars: red gradient for oversold, blue for neutral/overbought
+        colors = []
+        for z in df_z["Composite Z"]:
+            if z <= entry_threshold:
+                colors.append("#d62728")       # entry threshold crossed — red
+            elif z <= 0:
+                colors.append("#ff9896")        # below mean — light red
+            elif z <= 1.0:
+                colors.append("#aec7e8")        # neutral — light blue
+            else:
+                colors.append("#1f77b4")        # overbought — blue
+
+        # Annotate current holding
+        bar_labels = []
+        for _, row in df_z.iterrows():
+            t = row["Ticker"]
+            if state == "HOLDING" and t == ticker:
+                bar_labels.append(f"{t} ◀ holding")
+            else:
+                bar_labels.append(t)
+
+        fig_rank = go.Figure(go.Bar(
+            y=bar_labels,
+            x=df_z["Composite Z"],
+            orientation="h",
+            marker_color=colors,
+            text=[f"{z:.2f}" for z in df_z["Composite Z"]],
+            textposition="outside",
+            hovertemplate="<b>%{y}</b><br>Composite Z: %{x:.3f}<extra></extra>",
+        ))
+
+        # Entry threshold vertical line
+        fig_rank.add_vline(
+            x=entry_threshold,
+            line_dash="dash", line_color="#d62728", line_width=1.5,
+            annotation_text=f"Entry ({entry_threshold:.2f})",
+            annotation_position="top right",
+            annotation_font_color="#d62728",
+        )
+        # Zero line
+        fig_rank.add_vline(x=0, line_dash="dot", line_color="#aaa", line_width=1)
+
+        chart_height = max(400, n_valid * 22)
+        fig_rank.update_layout(
+            xaxis_title="Composite Z-Score (lower = more oversold)",
+            yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
+            margin=dict(t=30, b=50, l=100, r=80),
+            height=chart_height,
+            showlegend=False,
+        )
+        st.plotly_chart(fig_rank, use_container_width=True)
+
+        st.divider()
+
+        # ── Recent trade history ──────────────────────────────────────────────
+        if trd_df is not None and not trd_df.empty:
+            st.markdown("### 📋 Recent Trade History")
+            recent = trd_df.tail(10).iloc[::-1].reset_index(drop=True)
+            recent.index += 1
+            st.dataframe(recent, use_container_width=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VISUALIZER TAB
