@@ -7,6 +7,10 @@ on:
         description: 'Start date for full historical pull (YYYY-MM-DD)'
         required: true
         default: '2016-01-01'
+      tickers:
+        description: 'Space-separated tickers to bootstrap (leave blank for all)'
+        required: false
+        default: ''
 
 jobs:
   bootstrap:
@@ -22,61 +26,60 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas
+        run: pip install yfinance pandas
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bootstrap full history
-        env:
-          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+      - name: Bootstrap full history via yfinance
         run: |
           python - <<'EOF'
           import os
           import pandas as pd
+          import yfinance as yf
           from datetime import datetime
-          from massive import RESTClient
 
-          TICKERS    = ["GSIT"]
-          START_DATE = os.environ.get("START_DATE", "${{ github.event.inputs.start_date }}")
+          ALL_TICKERS = [
+              "GSIT",
+              "RMBS", "CDE", "SMTC", "DY", "SANM",
+              "AEIS", "VIAV", "MOD", "TTMI", "STRL",
+          ]
+
+          input_tickers = "${{ github.event.inputs.tickers }}".strip()
+          TICKERS    = input_tickers.split() if input_tickers else ALL_TICKERS
+          START_DATE = "${{ github.event.inputs.start_date }}"
           TODAY      = datetime.today().strftime("%Y-%m-%d")
           DATA_DIR   = "data"
+          COLUMNS    = ["Open", "High", "Low", "Close"]
 
-          client = RESTClient(api_key=os.environ["MASSIVE_API_KEY"])
+          os.makedirs(DATA_DIR, exist_ok=True)
 
           for ticker in TICKERS:
               print(f"Fetching {ticker} from {START_DATE} → {TODAY} ...")
-              aggs = []
-              for a in client.list_aggs(
-                  ticker     = ticker,
-                  multiplier = 1,
-                  timespan   = "day",
-                  from_      = START_DATE,
-                  to         = TODAY,
-                  limit      = 50000,
-                  adjusted   = True,
-              ):
-                  aggs.append(a)
+              df = yf.download(
+                  ticker,
+                  start      = START_DATE,
+                  end        = TODAY,
+                  auto_adjust = True,
+                  progress   = False,
+              )
 
-              if not aggs:
-                  print(f"  No data returned for {ticker}")
+              if df.empty:
+                  print(f"  {ticker}: no data returned — skipping")
                   continue
 
-              rows = []
-              for a in aggs:
-                  date = pd.Timestamp(a.timestamp, unit="ms", tz="UTC").normalize().tz_localize(None)
-                  rows.append({
-                      "Date":   date,
-                      "Open":   a.open,
-                      "High":   a.high,
-                      "Low":    a.low,
-                      "Close":  a.close,
-                      "Volume": a.volume,
-                  })
+              # yfinance multi-level columns when downloading single ticker
+              if isinstance(df.columns, pd.MultiIndex):
+                  df.columns = [col[0] for col in df.columns]
 
-              df = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
+              cols = [c for c in COLUMNS if c in df.columns]
+              df   = df[cols].copy()
+              df.index.name = "Date"
+              df = df.reset_index()
+              df["Date"] = pd.to_datetime(df["Date"]).dt.normalize()
+
               path = os.path.join(DATA_DIR, f"{ticker}_daily_high_low.csv")
               df.to_csv(path, index=False)
               print(f"  {ticker}: wrote {len(df)} rows ({df['Date'].min().date()} → {df['Date'].max().date()})")
@@ -87,5 +90,5 @@ jobs:
         run: |
           git add data/
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: bootstrap full GSIT history from Massive API (${{ github.event.inputs.start_date }} → today)"
+          git commit -m "chore: bootstrap historical data via yfinance (${{ github.event.inputs.start_date }} → today) for: ${{ github.event.inputs.tickers || 'all tickers' }}"
           git push

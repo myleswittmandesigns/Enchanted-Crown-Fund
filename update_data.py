@@ -13,7 +13,11 @@ from massive import RESTClient
 
 REPO_DIR  = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR  = os.path.join(REPO_DIR, "data")
-TICKERS   = ["GSIT"]
+TICKERS   = [
+    "GSIT",
+    "RMBS", "CDE", "SMTC", "DY", "SANM",
+    "AEIS", "VIAV", "MOD", "TTMI", "STRL",
+]
 COLUMNS   = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
 
