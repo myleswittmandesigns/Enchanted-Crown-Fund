@@ -31,8 +31,9 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("GSIT — Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt, tab_ml, tab_rules = st.tabs([
-    "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback", "📋 Strategy Rules"
+tab_viz, tab_bt, tab_ml, tab_cs, tab_rules = st.tabs([
+    "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback",
+    "🎯 Cross-Sectional", "📋 Strategy Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
@@ -1747,6 +1748,327 @@ with tab_ml:
                     plot_bgcolor="#fafafa", paper_bgcolor="white",
                 )
                 st.plotly_chart(fig_rr, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CROSS-SECTIONAL TAB  — single-position "biggest loser of the day" schedule
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_cs:
+    import plotly.subplots as psp_cs
+    import plotly.express as px
+
+    CS_DIR = Path(__file__).parent / "reports"
+
+    @st.cache_data(ttl=300)
+    def load_cs_data():
+        summary_files = sorted(CS_DIR.glob("cs_summary_*.csv"), reverse=True)
+        if not summary_files:
+            return None
+        latest   = summary_files[0]
+        run_date = latest.stem.replace("cs_summary_", "")
+
+        def _read(prefix):
+            p = CS_DIR / f"{prefix}_{run_date}.csv"
+            return pd.read_csv(p) if p.exists() else None
+
+        return {
+            "run_date": run_date,
+            "summary":  pd.read_csv(latest),
+            "trades":   _read("cs_trades"),
+            "signal":   _read("cs_signal"),
+            "equity":   _read("cs_equity"),
+            "wf":       _read("cs_wf"),
+            "grid":     _read("cs_grid"),
+        }
+
+    cs = load_cs_data()
+
+    if cs is None or cs["summary"] is None or cs["summary"].empty:
+        st.info("No cross-sectional results yet. Run `main_cross_sectional()` in the backtester to generate them.")
+    else:
+        srow      = cs["summary"].iloc[0]
+        trades    = cs["trades"]
+        signal    = cs["signal"]
+        equity    = cs["equity"]
+        wf_df     = cs["wf"]
+        grid_df   = cs["grid"]
+        run_date  = cs["run_date"]
+
+        through   = str(srow.get("Data Through", run_date))
+        n1, n2, n3 = int(srow["N1"]), int(srow["N2"]), int(srow["N3"])
+        k_opt     = float(srow["K"])
+        stop_opt  = float(srow["Stop %"])
+
+        st.markdown(
+            f"**Run:** `{run_date}` &nbsp;·&nbsp; **Data through:** `{through}` "
+            f"&nbsp;·&nbsp; **Universe:** {int(srow['Universe'])} tickers "
+            f"&nbsp;·&nbsp; **Global params:** N=({n1},{n2},{n3}) · K={k_opt:.1f} · "
+            f"Stop={stop_opt*100:.0f}%",
+            unsafe_allow_html=True,
+        )
+
+        # ── Today's action banner (the "biggest loser of the day" alert) ──────────
+        if signal is not None and not signal.empty:
+            sg    = signal.iloc[0]
+            state = str(sg["State"]).upper()
+            if state == "HOLDING":
+                st.success(
+                    f"📌 **HOLDING {sg['Ticker']}** — entered {sg['Entry Date']} @ "
+                    f"${sg['Entry $']:.2f}, last ${sg['Last $']:.2f} "
+                    f"(**{sg['Unrealized %']:+.2f}%** unrealized). Hold until exit; ignore new signals."
+                )
+            elif state in ("BUY", "ENTER"):
+                st.warning(
+                    f"🟢 **BUY {sg['Ticker']}** — biggest loser of the day. "
+                    f"Last ${sg['Last $']:.2f}. This would trigger the buy alert."
+                )
+            else:
+                st.info("💤 **CASH** — no candidate fired the 3-BB consensus today.")
+
+        # True peak-to-trough drawdown from the daily equity curve (conventional
+        # definition: each trough vs its own prior peak). The engine's CSV "Max DD %"
+        # divides the worst *dollar* drawdown by the all-time peak, which understates
+        # the felt percentage — so we recompute the honest figure here.
+        true_dd_pct = None
+        if equity is not None and not equity.empty:
+            _eqv = equity["Equity"].astype(float)
+            true_dd_pct = float((_eqv / _eqv.cummax() - 1).min() * 100)
+
+        # ── Headline metrics ──────────────────────────────────────────────────────
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("CAGR",          f"{srow['CAGR %']:.1f}%")
+        m2.metric("Total Return",  f"{srow['Total Return %']:.0f}%")
+        m3.metric("RDR",           f"{srow['RDR']:.2f}")
+        m4.metric("Win Rate",      f"{srow['Win %']:.1f}%")
+        m5.metric("Max DD",
+                  f"{true_dd_pct:.1f}%" if true_dd_pct is not None else f"-{srow['Max DD %']:.1f}%",
+                  help="True peak-to-trough drawdown from the daily equity curve. "
+                       f"(Engine CSV reports {srow['Max DD %']:.1f}%, which divides the "
+                       "worst dollar drawdown by the all-time peak — display-only, does "
+                       "not affect RDR/Score.)")
+        m6.metric("WF Profitable", f"{srow['WF Profitable']}")
+
+        st.caption(
+            "⚠️ Schedule below uses the **full-period best-fit** params. Walk-forward "
+            f"held up in only {srow['WF Profitable']} windows — treat as in-sample history, "
+            "not an out-of-sample track record."
+        )
+
+        sub_sched, sub_eq, sub_wf, sub_rs = st.tabs([
+            "📅 Schedule", "📈 Equity Curve", "🔬 Walk-Forward", "🎛 Response Surface"
+        ])
+
+        # ── 📅 SCHEDULE — the buy / hold / close timeline ─────────────────────────
+        with sub_sched:
+            if trades is None or trades.empty:
+                st.warning("No trade log found for this run.")
+            else:
+                sched = trades.copy()
+                sched["Entry Date"] = pd.to_datetime(sched["Entry Date"])
+                sched["Exit Date"]  = pd.to_datetime(sched["Exit Date"])
+
+                start_cap = (
+                    float(equity["Equity"].iloc[0])
+                    if equity is not None and not equity.empty else 5000.0
+                )
+                sched["Balance After $"] = start_cap * (1 + sched["Return %"] / 100.0).cumprod()
+                sched["Cash Before (d)"] = (
+                    sched["Entry Date"] - sched["Exit Date"].shift(1)
+                ).dt.days.fillna(0).astype(int)
+
+                # ── Gantt-style timeline: one lane per ticker, gaps = in cash ─────
+                tl = sched[["Ticker", "Entry Date", "Exit Date", "Return %",
+                            "Hold Days", "Reason"]].copy()
+                tl["Outcome"] = np.where(tl["Return %"] >= 0, "Win", "Loss")
+
+                # Append the currently-open position so the timeline shows live state
+                if signal is not None and not signal.empty and \
+                        str(signal.iloc[0]["State"]).upper() == "HOLDING":
+                    sg = signal.iloc[0]
+                    tl = pd.concat([tl, pd.DataFrame([{
+                        "Ticker":     sg["Ticker"],
+                        "Entry Date": pd.to_datetime(sg["Entry Date"]),
+                        "Exit Date":  pd.to_datetime(through),
+                        "Return %":   float(sg["Unrealized %"]),
+                        "Hold Days":  (pd.to_datetime(through)
+                                       - pd.to_datetime(sg["Entry Date"])).days,
+                        "Reason":     "open",
+                        "Outcome":    "Open",
+                    }])], ignore_index=True)
+
+                lane_order = (
+                    tl.groupby("Ticker")["Entry Date"].min().sort_values().index.tolist()
+                )
+
+                fig_tl = px.timeline(
+                    tl, x_start="Entry Date", x_end="Exit Date", y="Ticker",
+                    color="Outcome",
+                    color_discrete_map={"Win": "#2ca02c", "Loss": "#d62728",
+                                        "Open": "#f1c40f"},
+                    category_orders={"Ticker": lane_order,
+                                     "Outcome": ["Win", "Loss", "Open"]},
+                    hover_data={"Return %": ":.1f", "Hold Days": True,
+                                "Reason": True, "Entry Date": "|%Y-%m-%d",
+                                "Exit Date": "|%Y-%m-%d", "Ticker": False},
+                )
+                fig_tl.update_yaxes(autorange="reversed", title=None)
+                fig_tl.update_layout(
+                    height=max(280, 28 * len(lane_order) + 90),
+                    margin=dict(t=20, b=40, l=10, r=10),
+                    legend=dict(orientation="h", y=1.06, title=None),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                    xaxis_title=None,
+                )
+                st.plotly_chart(fig_tl, use_container_width=True)
+                st.caption(
+                    "Each bar = one holding (single position at a time). Gaps between "
+                    "bars = in cash. Green = win, red = loss, gold = currently open."
+                )
+
+                # ── The schedule table with running balance ───────────────────────
+                disp = sched.copy()
+                disp.insert(0, "#", range(1, len(disp) + 1))
+                disp["Buy"]   = disp["Entry Date"].dt.strftime("%Y-%m-%d")
+                disp["Close"] = disp["Exit Date"].dt.strftime("%Y-%m-%d")
+                disp = disp[["#", "Buy", "Ticker", "Close", "Hold Days",
+                             "Cash Before (d)", "Return %", "Balance After $", "Reason"]]
+
+                styled_sched = disp.style.format({
+                    "Return %":        "{:+.1f}%",
+                    "Balance After $": "${:,.0f}",
+                }).apply(
+                    lambda col: [
+                        ("color:#1a7a3c" if isinstance(v, (int, float)) and v >= 0
+                         else "color:#c0392b")
+                        if col.name == "Return %" else "" for v in col
+                    ], axis=0
+                )
+                st.dataframe(
+                    styled_sched, use_container_width=True, hide_index=True,
+                    height=min(640, 45 + 35 * len(disp)),
+                )
+
+                csv_bytes = disp.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇️ Download schedule (CSV)", csv_bytes,
+                    file_name=f"investment_schedule_{run_date}.csv",
+                    mime="text/csv",
+                )
+
+        # ── 📈 EQUITY CURVE ───────────────────────────────────────────────────────
+        with sub_eq:
+            if equity is None or equity.empty:
+                st.warning("No equity curve found for this run.")
+            else:
+                eq = equity.copy()
+                eq["Date"] = pd.to_datetime(eq["Date"])
+                start_cap  = float(eq["Equity"].iloc[0])
+                running_max = eq["Equity"].cummax()
+                dd_pct = (eq["Equity"] / running_max - 1) * 100
+
+                fig_eq = psp_cs.make_subplots(
+                    rows=2, cols=1, shared_xaxes=True,
+                    row_heights=[0.72, 0.28], vertical_spacing=0.06,
+                    subplot_titles=["Portfolio equity (log scale)", "Drawdown %"],
+                )
+                fig_eq.add_trace(go.Scatter(
+                    x=eq["Date"], y=eq["Equity"], mode="lines",
+                    line=dict(color="#4c72b0", width=2), name="Equity",
+                    hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra></extra>",
+                ), row=1, col=1)
+                fig_eq.add_hline(y=start_cap, line_dash="dash", line_color="#999",
+                                 line_width=1, row=1, col=1)
+                fig_eq.add_trace(go.Scatter(
+                    x=eq["Date"], y=dd_pct, mode="lines",
+                    line=dict(color="#d62728", width=1), fill="tozeroy",
+                    fillcolor="rgba(214,39,40,0.15)", name="Drawdown",
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f}%<extra></extra>",
+                ), row=2, col=1)
+                fig_eq.update_yaxes(type="log", row=1, col=1)
+                fig_eq.update_layout(
+                    height=460, showlegend=False,
+                    margin=dict(t=40, b=30, l=50, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_eq, use_container_width=True)
+                st.caption(
+                    f"Started at ${start_cap:,.0f} → ended at "
+                    f"${eq['Equity'].iloc[-1]:,.0f}. Log scale so early and late "
+                    "moves are equally legible."
+                )
+
+        # ── 🔬 WALK-FORWARD ───────────────────────────────────────────────────────
+        with sub_wf:
+            if wf_df is None or wf_df.empty:
+                st.warning("No walk-forward results found for this run.")
+            else:
+                st.caption(
+                    "Train = in-sample best per window. Test = out-of-sample. "
+                    "Red test bars / jumping best-params = overfitting signal."
+                )
+                wf_plot = wf_df.copy()
+                wf_plot["Window"] = wf_plot["Window"].astype(str)
+
+                fig_cswf = go.Figure()
+                fig_cswf.add_trace(go.Bar(
+                    x=wf_plot["Window"], y=wf_plot["Train Return %"],
+                    name="In-sample (train)", marker_color="#4c72b0",
+                    hovertemplate="Window %{x}<br>Train: %{y:.1f}%<extra></extra>",
+                ))
+                fig_cswf.add_trace(go.Bar(
+                    x=wf_plot["Window"], y=wf_plot["Test Return %"],
+                    name="Out-of-sample (test)",
+                    marker_color=["#2ca02c" if v and v > 0 else "#d62728"
+                                  for v in wf_plot["Test Return %"]],
+                    hovertemplate="Window %{x}<br>Test: %{y:.1f}%<extra></extra>",
+                ))
+                fig_cswf.add_hline(y=0, line_dash="dash", line_color="#999", line_width=1)
+                fig_cswf.update_layout(
+                    barmode="group", height=360,
+                    xaxis_title="Window #", yaxis_title="Return %",
+                    legend=dict(orientation="h", y=1.1),
+                    margin=dict(t=30, b=40, l=50, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_cswf, use_container_width=True)
+                st.dataframe(
+                    wf_df[["Window", "Train Start", "Train End", "Test Start", "Test End",
+                           "Best N_base", "Best Gap", "Best K", "Best Stop",
+                           "Train Return %", "Test Return %", "Test CAGR %", "Test Trades"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+        # ── 🎛 RESPONSE SURFACE (global params) ────────────────────────────────────
+        with sub_rs:
+            if grid_df is None or grid_df.empty:
+                st.warning("No grid-search results found for this run.")
+            else:
+                st.caption(
+                    "Smooth curve = generalized parameter. Spiky = overfit. "
+                    "Flat = irrelevant. (One global param set across the whole universe.)"
+                )
+                fig_csrs = psp_cs.make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=["N_base", "Gap", "K (std multiplier)", "Stop %"],
+                    vertical_spacing=0.18, horizontal_spacing=0.12,
+                )
+                for col_name, row, col in [("N_base", 1, 1), ("Gap", 1, 2),
+                                           ("K", 2, 1), ("Stop %", 2, 2)]:
+                    grouped = grid_df.groupby(col_name)["Score"].max().reset_index()
+                    x_vals  = grouped[col_name]
+                    if col_name == "Stop %":
+                        x_vals = (x_vals * 100).round(0)
+                    fig_csrs.add_trace(go.Scatter(
+                        x=x_vals, y=grouped["Score"], mode="lines+markers",
+                        line=dict(width=2), marker=dict(size=6), showlegend=False,
+                        hovertemplate=f"{col_name}=%{{x}}<br>Max Score=%{{y:.1f}}<extra></extra>",
+                    ), row=row, col=col)
+                fig_csrs.update_layout(
+                    height=480, margin=dict(t=50, b=30, l=40, r=20),
+                    plot_bgcolor="#fafafa", paper_bgcolor="white",
+                )
+                fig_csrs.update_yaxes(title_text="Max Score")
+                st.plotly_chart(fig_csrs, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

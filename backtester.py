@@ -1689,7 +1689,355 @@ def _build_ml_html(ticker: str, df_all: pd.DataFrame, wf_windows: list,
 </body></html>"""
 
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║          CROSS-SECTIONAL SINGLE-POSITION ENGINE (the fund simulator)        ║
+# ║  One global param set across the whole universe. Each day:                  ║
+# ║    • if holding → check exit (cross above ANY upper band, or stop)          ║
+# ║    • if flat    → buy the single MOST oversold name (biggest loser)         ║
+# ║      ranked by composite z-score = mean of (close−SMA)/STD over N1,N2,N3    ║
+# ║  Hold-to-exit. Same-day exit-then-enter allowed. One equity curve.          ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# Reuse the multi-lookback grid as the GLOBAL search space (shared across all tickers)
+CS_N_BASE_VALUES   = ML_N_BASE_VALUES
+CS_GAP_VALUES      = ML_GAP_VALUES
+CS_K_VALUES        = ML_K_VALUES
+CS_STOP_PCT_VALUES = ML_STOP_PCT_VALUES
+CS_MIN_TRADES      = 5
+CS_WF_TOP_COMBOS   = 200
+
+
+def load_aligned_universe():
+    """Load every ticker CSV, align closes on a master date index. Returns (dates, tickers, close_mat)."""
+    import numpy as np
+
+    paths   = sorted(DATA_DIR.glob("*_daily_high_low.csv"))
+    tickers = [p.stem.replace("_daily_high_low", "") for p in paths]
+
+    series = {}
+    for p, tk in zip(paths, tickers):
+        df = pd.read_csv(p, parse_dates=["Date"]).sort_values("Date")
+        series[tk] = df.set_index("Date")["Close"]
+
+    master = pd.DatetimeIndex(sorted(set().union(*[s.index for s in series.values()])))
+    close_mat = np.column_stack([series[tk].reindex(master).to_numpy(dtype=float) for tk in tickers])
+    return master, tickers, close_mat
+
+
+def run_cross_sectional(
+    close_mat, lower1, lower2, lower3, upper1, upper2, upper3,
+    compz, entry_mask, stop_pct, start_idx, end_idx, min_trades,
+    detailed: bool = False,
+):
+    """Single-position walk over [start_idx, end_idx). Starts flat. Returns metrics dict (+ detail)."""
+    import numpy as np
+
+    balance     = INITIAL_CAPITAL
+    in_trade    = False
+    held        = -1
+    entry_price = 0.0
+    shares      = 0.0
+    entry_idx   = 0
+    n_track     = end_idx - start_idx
+
+    equity   = np.empty(n_track, dtype=float)
+    trades   = []          # (entry_idx, exit_idx, held, entry_price, exit_price, reason)
+    stop_hits = 0
+
+    for j, i in enumerate(range(start_idx, end_idx)):
+        if in_trade:
+            c   = close_mat[i, held]
+            c_p = close_mat[i - 1, held]
+            tp = (
+                (c > upper1[i, held] and c_p <= upper1[i - 1, held]) or
+                (c > upper2[i, held] and c_p <= upper2[i - 1, held]) or
+                (c > upper3[i, held] and c_p <= upper3[i - 1, held])
+            )
+            sl = c <= entry_price * (1.0 - stop_pct)
+            force = not np.isfinite(c)      # delisted / missing → bail out
+            if tp or sl or force:
+                exit_price = c if np.isfinite(c) else close_mat[i - 1, held]
+                balance    = shares * exit_price
+                trades.append((entry_idx, i, held, entry_price, exit_price,
+                               "tp" if tp else ("sl" if sl else "force")))
+                if sl and not tp:
+                    stop_hits += 1
+                in_trade = False
+                held     = -1
+                shares   = 0.0
+
+        if not in_trade:
+            row = entry_mask[i]
+            if row.any():
+                masked = np.where(row & np.isfinite(compz[i]), compz[i], np.inf)
+                best   = int(np.argmin(masked))
+                if np.isfinite(masked[best]):
+                    entry_price = close_mat[i, best]
+                    shares      = balance / entry_price
+                    held        = best
+                    entry_idx   = i
+                    in_trade    = True
+
+        equity[j] = shares * close_mat[i, held] if in_trade else balance
+
+    if len(trades) < min_trades:
+        return None
+
+    final_balance = equity[-1]
+    total_return  = final_balance - INITIAL_CAPITAL
+    total_ret_pct = total_return / INITIAL_CAPITAL * 100.0
+    num_trades    = len(trades)
+    wins          = sum(1 for t in trades if t[4] > t[3])
+    win_rate      = wins / num_trades * 100.0
+    avg_hold      = sum(t[1] - t[0] for t in trades) / num_trades
+
+    peak       = np.maximum.accumulate(equity)
+    max_dd     = float((peak - equity).max())
+    max_dd_pct = max_dd / peak.max() * 100.0 if peak.max() > 0 else 0.0
+    rdr        = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0
+
+    result = {
+        "Trades":          num_trades,
+        "Stop Hits":       int(stop_hits),
+        "Win %":           round(win_rate, 1),
+        "Avg Hold Days":   round(avg_hold, 1),
+        "Final Balance $": round(final_balance, 2),
+        "Total Return $":  round(total_return, 2),
+        "Total Return %":  round(total_ret_pct, 2),
+        "Max Drawdown $":  round(max_dd, 2),
+        "Max Drawdown %":  round(max_dd_pct, 2),
+        "RDR":             rdr,
+        "Score":           round(total_ret_pct * rdr / SCORE_DIVISOR, 1),
+    }
+    if detailed:
+        result["_trades"]   = trades
+        result["_equity"]   = equity
+        result["_final"]    = {"in_trade": in_trade, "held": held,
+                               "entry_price": entry_price, "entry_idx": entry_idx}
+    return result
+
+
+def _cs_build_bands(sma_cache, std_cache, n1, n2, n3, k):
+    """Assemble band matrices for one (N1,N2,N3,K). compz is K-independent so it's built by the caller."""
+    lower1 = sma_cache[n1] - k * std_cache[n1]; upper1 = sma_cache[n1] + k * std_cache[n1]
+    lower2 = sma_cache[n2] - k * std_cache[n2]; upper2 = sma_cache[n2] + k * std_cache[n2]
+    lower3 = sma_cache[n3] - k * std_cache[n3]; upper3 = sma_cache[n3] + k * std_cache[n3]
+    entry_mask = (close_mat_g < lower1) & (close_mat_g < lower2) & (close_mat_g < lower3)
+    return lower1, lower2, lower3, upper1, upper2, upper3, entry_mask
+
+
+def walk_forward_cs(dates, sma_cache, std_cache, compz_cache, top_combos,
+                    train_years=5, test_years=1, step_months=6, wf_min_trades=3):
+    """Walk-forward on the portfolio equity curve. Bands are causal so we reuse full-data caches."""
+    import numpy as np
+
+    n_days  = len(dates)
+    first_valid = max(n_base + 2 * gap for n_base, gap, k, sp in top_combos)  # warmup of largest N3
+    windows = []
+    t = dates.min()
+
+    while True:
+        train_end_date = t + pd.DateOffset(years=train_years)
+        test_end_date  = train_end_date + pd.DateOffset(years=test_years)
+        if test_end_date > dates.max():
+            break
+        te_mask = np.asarray(dates >= train_end_date)
+        xt_mask = np.asarray(dates >= test_end_date)
+        if not te_mask.any() or not xt_mask.any():
+            break
+        train_end_idx = int(np.argmax(te_mask))
+        test_end_idx  = int(np.argmax(xt_mask))
+
+        best_score = -1e18
+        best_combo = top_combos[0]
+        best_train = None
+        for n_base, gap, k, stop_pct in top_combos:
+            n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+            lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(sma_cache, std_cache, n1, n2, n3, k)
+            compz = compz_cache[(n_base, gap)]
+            r = run_cross_sectional(close_mat_g, lo1, lo2, lo3, up1, up2, up3, compz, em,
+                                    stop_pct, first_valid, train_end_idx, wf_min_trades)
+            if r and r["Score"] > best_score:
+                best_score = r["Score"]
+                best_combo = (n_base, gap, k, stop_pct)
+                best_train = r
+
+        # OOS test with the window's best params, starting flat at train_end
+        n_base, gap, k, stop_pct = best_combo
+        n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+        lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(sma_cache, std_cache, n1, n2, n3, k)
+        compz = compz_cache[(n_base, gap)]
+        test_r = run_cross_sectional(close_mat_g, lo1, lo2, lo3, up1, up2, up3, compz, em,
+                                     stop_pct, train_end_idx, test_end_idx, 1)
+
+        test_span_yrs = (dates[test_end_idx - 1] - dates[train_end_idx]).days / 365.25
+        test_cagr = None
+        if test_r and test_span_yrs > 0:
+            test_cagr = round(((test_r["Final Balance $"] / INITIAL_CAPITAL) ** (1 / test_span_yrs) - 1) * 100, 1)
+
+        windows.append({
+            "Window":         len(windows) + 1,
+            "Train Start":    t.strftime("%Y-%m"),
+            "Train End":      train_end_date.strftime("%Y-%m"),
+            "Test Start":     train_end_date.strftime("%Y-%m"),
+            "Test End":       test_end_date.strftime("%Y-%m"),
+            "Best N_base":    n_base, "Best Gap": gap,
+            "Best K":         round(k, 1), "Best Stop": f"{stop_pct:.0%}",
+            "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
+            "Test Trades":    test_r["Trades"]                       if test_r    else 0,
+            "Test Return %":  round(test_r["Total Return %"], 1)     if test_r    else None,
+            "Test CAGR %":    test_cagr,
+        })
+        t = t + pd.DateOffset(months=step_months)
+
+    return windows
+
+
+# Module-level handle so the band-builder can see the aligned close matrix
+close_mat_g = None
+
+
+def main_cross_sectional():
+    import numpy as np
+    global close_mat_g
+
+    run_date = datetime.today().strftime("%Y-%m-%d")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cross-sectional single-position backtester starting")
+
+    dates, tickers, close_mat = load_aligned_universe()
+    close_mat_g = close_mat
+    n_days  = len(dates)
+    years   = (dates.max() - dates.min()).days / 365.25
+    print(f"  Universe: {len(tickers)} tickers  |  {dates.min().date()} → {dates.max().date()}  ({n_days:,} days)")
+
+    # Precompute SMA/STD per unique N across the whole matrix (causal, no look-ahead)
+    unique_ns = sorted({n for nb in CS_N_BASE_VALUES for g in CS_GAP_VALUES
+                        for n in [nb, nb + g, nb + 2 * g]})
+    df_close  = pd.DataFrame(close_mat)
+    sma_cache, std_cache = {}, {}
+    for n in unique_ns:
+        sma_cache[n] = df_close.rolling(n).mean().to_numpy()
+        std_cache[n] = df_close.rolling(n).std(ddof=0).to_numpy()
+
+    # Composite z-score per (N_base, gap) — K-independent, reused across all K/stop
+    compz_cache = {}
+    for n_base in CS_N_BASE_VALUES:
+        for gap in CS_GAP_VALUES:
+            n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+            z1 = (close_mat - sma_cache[n1]) / std_cache[n1]
+            z2 = (close_mat - sma_cache[n2]) / std_cache[n2]
+            z3 = (close_mat - sma_cache[n3]) / std_cache[n3]
+            compz_cache[(n_base, gap)] = (z1 + z2 + z3) / 3.0
+
+    combos = list(product(CS_N_BASE_VALUES, CS_GAP_VALUES, CS_K_VALUES, CS_STOP_PCT_VALUES))
+    print(f"  Global grid: {len(combos):,} combos  |  one portfolio sim each")
+
+    rows = []
+    for n_base, gap, k, stop_pct in combos:
+        n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+        first_valid = n3                       # warmup for largest band
+        lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(sma_cache, std_cache, n1, n2, n3, k)
+        compz = compz_cache[(n_base, gap)]
+        r = run_cross_sectional(close_mat, lo1, lo2, lo3, up1, up2, up3, compz, em,
+                                stop_pct, max(first_valid, 1), n_days, CS_MIN_TRADES)
+        if r:
+            r.update({"N_base": n_base, "Gap": gap, "N1": n1, "N2": n2, "N3": n3,
+                      "K": k, "Stop %": stop_pct})
+            rows.append(r)
+
+    if not rows:
+        print("  No valid cross-sectional results.")
+        return
+
+    df_all = pd.DataFrame([{kk: vv for kk, vv in r.items() if not kk.startswith("_")} for r in rows])
+    df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
+    df_all["CAGR %"] = df_all["CAGR %"].round(1)
+
+    best = df_all.loc[df_all["Score"].idxmax()]
+    bn, bg, bk, bs = int(best["N_base"]), int(best["Gap"]), float(best["K"]), float(best["Stop %"])
+    print(f"  Best global: N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])}) K={bk} Stop={bs:.0%}  "
+          f"CAGR={best['CAGR %']:.1f}%  RDR={best['RDR']:.2f}  Win={best['Win %']:.1f}%  Trades={int(best['Trades'])}")
+
+    # Re-run best combo with detail for trade log, equity curve, and today's signal
+    n1, n2, n3 = bn, bn + bg, bn + 2 * bg
+    lo1, lo2, lo3, up1, up2, up3, em = _cs_build_bands(sma_cache, std_cache, n1, n2, n3, bk)
+    compz = compz_cache[(bn, bg)]
+    detail = run_cross_sectional(close_mat, lo1, lo2, lo3, up1, up2, up3, compz, em,
+                                 bs, max(n3, 1), n_days, 1, detailed=True)
+
+    # Trade log
+    trade_rows = []
+    for e_idx, x_idx, col, e_px, x_px, reason in detail["_trades"]:
+        trade_rows.append({
+            "Ticker":     tickers[col],
+            "Entry Date": dates[e_idx].strftime("%Y-%m-%d"),
+            "Exit Date":  dates[x_idx].strftime("%Y-%m-%d"),
+            "Entry $":    round(e_px, 2),
+            "Exit $":     round(x_px, 2),
+            "Return %":   round((x_px / e_px - 1) * 100, 2),
+            "Hold Days":  x_idx - e_idx,
+            "Reason":     reason,
+        })
+    trades_df = pd.DataFrame(trade_rows)
+
+    # Equity curve (aligned to the detailed run range = [n3, n_days))
+    eq_dates = dates[max(n3, 1):n_days]
+    equity_df = pd.DataFrame({"Date": eq_dates.strftime("%Y-%m-%d"), "Equity": detail["_equity"].round(2)})
+
+    # Today's signal — current state + biggest loser of the day
+    last = n_days - 1
+    masked_last = np.where(em[last] & np.isfinite(compz[last]), compz[last], np.inf)
+    biggest_loser_col = int(np.argmin(masked_last))
+    has_candidate     = np.isfinite(masked_last[biggest_loser_col])
+    fstate = detail["_final"]
+    if fstate["in_trade"]:
+        held_tk = tickers[fstate["held"]]
+        unreal  = (close_mat[last, fstate["held"]] / fstate["entry_price"] - 1) * 100
+        signal  = {"State": "HOLDING", "Ticker": held_tk,
+                   "Entry Date": dates[fstate["entry_idx"]].strftime("%Y-%m-%d"),
+                   "Entry $": round(fstate["entry_price"], 2),
+                   "Last $": round(close_mat[last, fstate["held"]], 2),
+                   "Unrealized %": round(unreal, 2)}
+    elif has_candidate:
+        signal  = {"State": "BUY", "Ticker": tickers[biggest_loser_col],
+                   "Composite z": round(float(masked_last[biggest_loser_col]), 2),
+                   "Last $": round(close_mat[last, biggest_loser_col], 2)}
+    else:
+        signal  = {"State": "CASH", "Ticker": None}
+    print(f"  Signal as of {dates[last].date()}: {signal['State']}"
+          + (f" {signal['Ticker']}" if signal.get("Ticker") else ""))
+
+    # Walk-forward on top-N global combos
+    top_combos = list(df_all.nlargest(CS_WF_TOP_COMBOS, "Score")[["N_base", "Gap", "K", "Stop %"]]
+                      .itertuples(index=False, name=None))
+    print(f"  Walk-forward ({len(top_combos)} combos × windows)...")
+    wf = walk_forward_cs(dates, sma_cache, std_cache, compz_cache, top_combos)
+    wf_pos = sum(1 for w in wf if w.get("Test Return %") and w["Test Return %"] > 0)
+    print(f"  Walk-forward: {wf_pos}/{len(wf)} windows profitable OOS")
+
+    # Write CSVs for the visualizer
+    OUT_DIR.mkdir(exist_ok=True)
+    df_all.to_csv(OUT_DIR / f"cs_grid_{run_date}.csv", index=False)
+    trades_df.to_csv(OUT_DIR / f"cs_trades_{run_date}.csv", index=False)
+    equity_df.to_csv(OUT_DIR / f"cs_equity_{run_date}.csv", index=False)
+    pd.DataFrame(wf).to_csv(OUT_DIR / f"cs_wf_{run_date}.csv", index=False)
+    pd.DataFrame([{
+        "Run Date": run_date, "Data Through": dates.max().strftime("%Y-%m-%d"),
+        "Universe": len(tickers), "Years": round(years, 1),
+        "N1": n1, "N2": n2, "N3": n3, "K": bk, "Stop %": bs,
+        "CAGR %": best["CAGR %"], "Total Return %": best["Total Return %"],
+        "RDR": best["RDR"], "Win %": best["Win %"], "Max DD %": best["Max Drawdown %"],
+        "Trades": int(best["Trades"]), "Avg Hold Days": best["Avg Hold Days"],
+        "WF Profitable": f"{wf_pos}/{len(wf)}",
+        "Signal": signal["State"], "Signal Ticker": signal.get("Ticker"),
+    }]).to_csv(OUT_DIR / f"cs_summary_{run_date}.csv", index=False)
+    pd.DataFrame([signal]).to_csv(OUT_DIR / f"cs_signal_{run_date}.csv", index=False)
+
+    print(f"  CSVs written to {OUT_DIR}/cs_*_{run_date}.csv")
+
+
 if __name__ == "__main__":
     main()
     # main_keltner()  # ARCHIVED — KC results not yet high-confidence
     main_multilookback()
+    main_cross_sectional()
