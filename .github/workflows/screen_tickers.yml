@@ -1,0 +1,157 @@
+name: Screen Tickers (history + splits + active)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Required first trading date (ticker must trade on/before this)'
+        required: true
+        default: '2016-01-05'
+      max_gap_days:
+        description: 'Max calendar days since last trade to still count as active'
+        required: false
+        default: '7'
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Screen candidates via yfinance
+        run: |
+          python - <<'EOF'
+          import os
+          import time
+          from datetime import datetime, timedelta
+
+          import pandas as pd
+          import yfinance as yf
+
+          START_DATE   = "${{ github.event.inputs.start_date }}"
+          MAX_GAP_DAYS = int("${{ github.event.inputs.max_gap_days }}")
+          TODAY        = datetime.today()
+          REQUIRE_BY   = pd.Timestamp(START_DATE)
+
+          with open("data/candidates.txt") as f:
+              candidates = [ln.strip() for ln in f if ln.strip()]
+          print(f"Screening {len(candidates)} candidates "
+                f"(must trade by {START_DATE}, no splits, active "
+                f"within {MAX_GAP_DAYS}d)")
+
+          CHUNK = 50
+          results = []
+
+          def screen_one(ticker, df, splits):
+              # df: per-ticker OHLCV (auto_adjust=False); splits: Series of split ratios
+              if df is None or df.dropna(how="all").empty:
+                  return dict(Ticker=ticker, Qualifies=False, Reason="no data",
+                              First="", Last="", Rows=0, NSplits=0, SplitDates="")
+              df = df.dropna(how="all")
+              first = df.index.min()
+              last  = df.index.max()
+              # splits within the screened window
+              if splits is not None and len(splits):
+                  sp = splits[(splits.index >= REQUIRE_BY - pd.Timedelta(days=400)) &
+                              (splits != 0)]
+              else:
+                  sp = pd.Series(dtype=float)
+              n_splits   = int(len(sp))
+              split_dates = ";".join(d.strftime("%Y-%m-%d") for d in sp.index)
+              gap_days   = (pd.Timestamp(TODAY.date()) - last.normalize()).days
+
+              reasons = []
+              if first > REQUIRE_BY:
+                  reasons.append(f"starts {first.date()}")
+              if n_splits > 0:
+                  reasons.append(f"{n_splits} split(s)")
+              if gap_days > MAX_GAP_DAYS:
+                  reasons.append(f"stale {gap_days}d")
+
+              return dict(
+                  Ticker=ticker,
+                  Qualifies=(len(reasons) == 0),
+                  Reason="; ".join(reasons) if reasons else "OK",
+                  First=first.strftime("%Y-%m-%d"),
+                  Last=last.strftime("%Y-%m-%d"),
+                  Rows=len(df),
+                  NSplits=n_splits,
+                  SplitDates=split_dates,
+              )
+
+          for i in range(0, len(candidates), CHUNK):
+              chunk = candidates[i:i + CHUNK]
+              print(f"  [{i//CHUNK + 1}] downloading {len(chunk)} tickers ...")
+              try:
+                  data = yf.download(
+                      chunk,
+                      start       = "2016-01-01",
+                      end         = TODAY.strftime("%Y-%m-%d"),
+                      auto_adjust = False,
+                      actions     = True,
+                      group_by    = "ticker",
+                      threads     = True,
+                      progress    = False,
+                  )
+              except Exception as e:
+                  print(f"     chunk failed: {e}")
+                  for t in chunk:
+                      results.append(dict(Ticker=t, Qualifies=False,
+                                          Reason="download error", First="", Last="",
+                                          Rows=0, NSplits=0, SplitDates=""))
+                  continue
+
+              for t in chunk:
+                  try:
+                      if len(chunk) == 1:
+                          sub = data
+                      else:
+                          sub = data[t] if t in data.columns.get_level_values(0) else None
+                      if sub is None:
+                          results.append(dict(Ticker=t, Qualifies=False, Reason="no data",
+                                              First="", Last="", Rows=0, NSplits=0,
+                                              SplitDates=""))
+                          continue
+                      splits = sub["Stock Splits"] if "Stock Splits" in sub.columns else None
+                      ohlc   = sub[[c for c in ["Open", "High", "Low", "Close"]
+                                    if c in sub.columns]]
+                      results.append(screen_one(t, ohlc, splits))
+                  except Exception as e:
+                      results.append(dict(Ticker=t, Qualifies=False,
+                                          Reason=f"parse error: {e}", First="", Last="",
+                                          Rows=0, NSplits=0, SplitDates=""))
+              time.sleep(1)
+
+          out = pd.DataFrame(results).sort_values(["Qualifies", "Ticker"],
+                                                  ascending=[False, True])
+          os.makedirs("reports", exist_ok=True)
+          path = "reports/ticker_screen.csv"
+          out.to_csv(path, index=False)
+
+          q = out[out["Qualifies"]]
+          print(f"\n=== {len(q)} / {len(out)} qualify ===")
+          print(", ".join(q["Ticker"].tolist()))
+          print(f"\nWrote {path}")
+          EOF
+
+      - name: Commit screen results
+        run: |
+          git add reports/ticker_screen.csv
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore: screen Russell 2000 for full-history split-free active tickers"
+          git push
