@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas tqdm
+        run: pip install massive pandas tqdm matplotlib
 
       - name: Configure git
         run: |
@@ -52,3 +52,12 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "chore: daily data + backtest report update [skip ci]"
           git push
+
+      - name: Send daily summary email
+        env:
+          SMTP_HOST:    ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:    ${{ secrets.SMTP_PORT }}
+          SMTP_USER:    ${{ secrets.SMTP_USER }}
+          SMTP_PASS:    ${{ secrets.SMTP_PASS }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: python send_summary_email.py
