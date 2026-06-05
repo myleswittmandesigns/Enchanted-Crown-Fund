@@ -1217,6 +1217,447 @@ def main_keltner():
     print(f"  Report: {out_path}")
 
 
+# ╔══════════════════════════════════════════════════════════════════════════════╗
+# ║               MULTI-LOOKBACK CONSENSUS BACKTESTER                           ║
+# ║  Entry: close below ALL three lower BBs simultaneously                      ║
+# ║  Exit:  close crosses above ANY upper BB  OR  stop loss                     ║
+# ║  Grid:  (N_base, gap, K, Stop) — N1=N_base, N2=N_base+gap, N3=N_base+2*gap ║
+# ╚══════════════════════════════════════════════════════════════════════════════╝
+
+# ── Multi-lookback grid ───────────────────────────────────────────────────────
+ML_N_BASE_VALUES  = list(range(16, 41))          # Base lookback: [16 .. 40]
+ML_GAP_VALUES     = [5, 8, 10, 12, 15]           # Spacing between bands
+ML_K_VALUES       = [round(k * 0.1, 1) for k in range(15, 33)]  # [1.5 .. 3.2]
+ML_STOP_PCT_VALUES = [0.20, 0.30, 0.40, 0.50, 0.60]
+ML_MIN_TRADES     = 3                            # Lower floor — fewer trades expected
+
+DATA_DIR = REPO_DIR / "data"
+
+
+def run_multilookback(
+    close_np: "np.ndarray",
+    upper1_np: "np.ndarray", lower1_np: "np.ndarray",
+    upper2_np: "np.ndarray", lower2_np: "np.ndarray",
+    upper3_np: "np.ndarray", lower3_np: "np.ndarray",
+    stop_pct: float,
+    min_trades: int,
+    entry_from_idx: int = 0,
+) -> dict | None:
+    """
+    NumPy-based inner loop for speed at multi-ticker scale.
+    Entry:  close < lower1 AND lower2 AND lower3
+    Exit TP: close crosses above upper1 OR upper2 OR upper3
+    Exit SL: close <= entry_price * (1 - stop_pct)
+    """
+    n_bars = len(close_np)
+    start  = max(entry_from_idx, 1)   # need i-1 for crossover check
+
+    trades       = []
+    daily_equity = []
+    balance      = INITIAL_CAPITAL
+    shares       = 0.0
+    in_trade     = False
+    entry_price  = 0.0
+    entry_idx    = 0
+    bal_at_entry = INITIAL_CAPITAL
+    wins_count   = 0
+    win_pnls     = []
+    loss_pnls    = []
+    stop_hits    = 0
+    trade_rets   = []
+
+    for i in range(start, n_bars):
+        c    = close_np[i]
+        c_p  = close_np[i - 1]
+
+        if not in_trade:
+            # Entry: below ALL three lower bands
+            if (c < lower1_np[i] and c < lower2_np[i] and c < lower3_np[i]):
+                in_trade     = True
+                entry_price  = c
+                entry_idx    = i
+                bal_at_entry = balance
+                shares       = balance / c
+        else:
+            # Take profit: crosses above ANY upper band
+            tp = (
+                (c > upper1_np[i] and c_p <= upper1_np[i - 1]) or
+                (c > upper2_np[i] and c_p <= upper2_np[i - 1]) or
+                (c > upper3_np[i] and c_p <= upper3_np[i - 1])
+            )
+            sl = c <= entry_price * (1.0 - stop_pct)
+            if tp or sl:
+                balance  = shares * c
+                ret_pct  = (c / entry_price - 1.0) * 100.0
+                pnl      = balance - bal_at_entry
+                trades.append({"entry": entry_price, "exit": c,
+                                "hold": i - entry_idx, "reason": "tp" if tp else "sl"})
+                trade_rets.append(ret_pct)
+                if pnl > 0:
+                    wins_count += 1
+                    win_pnls.append(pnl)
+                else:
+                    loss_pnls.append(pnl)
+                if not tp:
+                    stop_hits += 1
+                shares   = 0.0
+                in_trade = False
+
+        daily_equity.append(shares * c if in_trade else balance)
+
+    if len(trades) < min_trades:
+        return None
+
+    import numpy as np
+    final_balance = shares * close_np[-1] if in_trade else balance
+    total_return  = final_balance - INITIAL_CAPITAL
+    total_ret_pct = total_return / INITIAL_CAPITAL * 100.0
+    num_trades    = len(trades)
+    win_rate      = wins_count / num_trades * 100.0
+    avg_hold      = sum(t["hold"] for t in trades) / num_trades
+
+    eq_arr     = np.array(daily_equity)
+    peak       = np.maximum.accumulate(eq_arr)
+    max_dd     = float((peak - eq_arr).max())
+    max_dd_pct = max_dd / peak.max() * 100.0 if peak.max() > 0 else 0.0
+    rdr        = min(round(total_return / max_dd, 2), 999.0) if max_dd > 0 else 999.0
+
+    return {
+        "Trades":         num_trades,
+        "Stop Hits":      int(stop_hits),
+        "Win %":          round(win_rate, 1),
+        "Avg Hold Days":  round(avg_hold, 1),
+        "Final Balance $":round(final_balance, 2),
+        "Total Return $": round(total_return, 2),
+        "Total Return %": round(total_ret_pct, 2),
+        "Max Drawdown $": round(max_dd, 2),
+        "Max Drawdown %": round(max_dd_pct, 2),
+        "RDR":            rdr,
+        "Score":          round(total_ret_pct * rdr / SCORE_DIVISOR, 1),
+    }
+
+
+def walk_forward_ml(
+    close_np: "np.ndarray",
+    dates: pd.Series,
+    n_base_values: list,
+    gap_values: list,
+    k_values: list,
+    stop_values: list,
+    train_years: int = 5,
+    test_years: int  = 1,
+    step_months: int = 6,
+    wf_min_trades: int = 2,
+) -> list:
+    """Walk-forward validation for multi-lookback strategy."""
+    import numpy as np
+
+    windows = []
+    t = dates.min()
+
+    while True:
+        train_end_date = t + pd.DateOffset(years=train_years)
+        test_end_date  = train_end_date + pd.DateOffset(years=test_years)
+        if test_end_date > dates.max():
+            break
+
+        te_mask = dates >= train_end_date
+        xt_mask = dates >= test_end_date
+        if not te_mask.any() or not xt_mask.any():
+            break
+        train_end_idx = int(dates[te_mask].index[0])
+        test_end_idx  = int(dates[xt_mask].index[0])
+
+        train_close = close_np[:train_end_idx]
+
+        # Precompute all unique N values for this training window
+        unique_ns = sorted({n for n_base in n_base_values
+                            for gap in gap_values
+                            for n in [n_base, n_base + gap, n_base + 2 * gap]})
+        ind_cache = {}
+        for n in unique_ns:
+            if n < len(train_close):
+                sma = pd.Series(train_close).rolling(n).mean().to_numpy()
+                std = pd.Series(train_close).rolling(n).std(ddof=0).to_numpy()
+                ind_cache[n] = (sma, std)
+
+        best_score = -1.0
+        best_n_base = n_base_values[0]
+        best_gap    = gap_values[0]
+        best_k      = k_values[0]
+        best_stop   = stop_values[0]
+        best_train  = None
+
+        for n_base in n_base_values:
+            for gap in gap_values:
+                n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+                if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
+                    continue
+                for k in k_values:
+                    sma1, std1 = ind_cache[n1]
+                    upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
+                    sma2, std2 = ind_cache[n2]
+                    upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
+                    sma3, std3 = ind_cache[n3]
+                    upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
+
+                    for stop_pct in stop_values:
+                        r = run_multilookback(
+                            train_close,
+                            upper1, lower1, upper2, lower2, upper3, lower3,
+                            stop_pct, wf_min_trades,
+                        )
+                        if r and r["Score"] > best_score:
+                            best_score  = r["Score"]
+                            best_n_base = n_base
+                            best_gap    = gap
+                            best_k      = k
+                            best_stop   = stop_pct
+                            best_train  = r
+
+        # Run test period with best params
+        test_close = close_np[:test_end_idx]
+        n1, n2, n3 = best_n_base, best_n_base + best_gap, best_n_base + 2 * best_gap
+        unique_test_ns = {n1, n2, n3}
+        test_cache = {}
+        for n in unique_test_ns:
+            sma = pd.Series(test_close).rolling(n).mean().to_numpy()
+            std = pd.Series(test_close).rolling(n).std(ddof=0).to_numpy()
+            test_cache[n] = (sma, std)
+
+        sma1, std1 = test_cache[n1]
+        upper1 = sma1 + best_k * std1; lower1 = sma1 - best_k * std1
+        sma2, std2 = test_cache[n2]
+        upper2 = sma2 + best_k * std2; lower2 = sma2 - best_k * std2
+        sma3, std3 = test_cache[n3]
+        upper3 = sma3 + best_k * std3; lower3 = sma3 - best_k * std3
+
+        test_r = run_multilookback(
+            test_close,
+            upper1, lower1, upper2, lower2, upper3, lower3,
+            best_stop, 1, entry_from_idx=train_end_idx,
+        )
+
+        test_span_yrs = (dates.iloc[test_end_idx - 1] - dates.iloc[train_end_idx]).days / 365.25
+        test_cagr = None
+        if test_r and test_span_yrs > 0:
+            test_cagr = round(
+                ((test_r["Final Balance $"] / INITIAL_CAPITAL) ** (1 / test_span_yrs) - 1) * 100, 1
+            )
+
+        windows.append({
+            "Window":         len(windows) + 1,
+            "Train Start":    t.strftime("%Y-%m"),
+            "Train End":      train_end_date.strftime("%Y-%m"),
+            "Test Start":     train_end_date.strftime("%Y-%m"),
+            "Test End":       test_end_date.strftime("%Y-%m"),
+            "Best N_base":    best_n_base,
+            "Best Gap":       best_gap,
+            "Best K":         round(best_k, 1),
+            "Best Stop":      f"{best_stop:.0%}",
+            "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
+            "Train Score":    round(best_train["Score"], 1)          if best_train else None,
+            "Test Trades":    test_r["Trades"]                        if test_r    else 0,
+            "Test Return %":  round(test_r["Total Return %"], 1)      if test_r    else None,
+            "Test CAGR %":    test_cagr,
+        })
+
+        t = t + pd.DateOffset(months=step_months)
+
+    return windows
+
+
+def main_multilookback():
+    import numpy as np
+    from itertools import product as iproduct
+
+    run_date = datetime.today().strftime("%Y-%m-%d")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Multi-lookback backtester starting")
+
+    tickers   = sorted(p.stem.replace("_daily_high_low", "") for p in DATA_DIR.glob("*_daily_high_low.csv"))
+    all_results = {}
+
+    for ticker in tickers:
+        data_path = DATA_DIR / f"{ticker}_daily_high_low.csv"
+        df_raw    = (
+            pd.read_csv(data_path, parse_dates=["Date"])
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+        close_np    = df_raw["Close"].to_numpy(dtype=float)
+        dates       = df_raw["Date"]
+        data_through = dates.max().strftime("%Y-%m-%d")
+        years        = (dates.max() - dates.min()).days / 365.25
+
+        print(f"\n  [{ticker}] {dates.min().date()} → {data_through}  ({len(df_raw):,} rows)")
+
+        # Precompute all unique N values across the entire grid
+        unique_ns = sorted({n for n_base in ML_N_BASE_VALUES
+                            for gap in ML_GAP_VALUES
+                            for n in [n_base, n_base + gap, n_base + 2 * gap]})
+        ind_cache = {}
+        for n in unique_ns:
+            sma = pd.Series(close_np).rolling(n).mean().to_numpy()
+            std = pd.Series(close_np).rolling(n).std(ddof=0).to_numpy()
+            ind_cache[n] = (sma, std)
+
+        combos = list(iproduct(ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES))
+        print(f"  Grid: {len(combos):,} combos  (N_base={ML_N_BASE_VALUES[0]}..{ML_N_BASE_VALUES[-1]}  gap={ML_GAP_VALUES}  K={ML_K_VALUES[0]}..{ML_K_VALUES[-1]}  Stop={[f'{s:.0%}' for s in ML_STOP_PCT_VALUES]})")
+
+        rows = []
+        for n_base, gap, k, stop_pct in combos:
+            n1, n2, n3 = n_base, n_base + gap, n_base + 2 * gap
+            if n1 not in ind_cache or n2 not in ind_cache or n3 not in ind_cache:
+                continue
+            sma1, std1 = ind_cache[n1]
+            upper1 = sma1 + k * std1; lower1 = sma1 - k * std1
+            sma2, std2 = ind_cache[n2]
+            upper2 = sma2 + k * std2; lower2 = sma2 - k * std2
+            sma3, std3 = ind_cache[n3]
+            upper3 = sma3 + k * std3; lower3 = sma3 - k * std3
+
+            r = run_multilookback(
+                close_np,
+                upper1, lower1, upper2, lower2, upper3, lower3,
+                stop_pct, ML_MIN_TRADES,
+            )
+            if r:
+                r.update({"Ticker": ticker, "N_base": n_base, "Gap": gap, "N1": n1, "N2": n2, "N3": n3, "K": k, "Stop %": stop_pct})
+                rows.append(r)
+
+        if not rows:
+            print(f"  No valid results for {ticker}")
+            continue
+
+        df_all = pd.DataFrame(rows)
+        df_all["CAGR %"] = ((df_all["Final Balance $"] / INITIAL_CAPITAL) ** (1 / years) - 1) * 100
+        df_all["CAGR %"] = df_all["CAGR %"].round(1)
+
+        best = df_all.loc[df_all["Score"].idxmax()]
+        print(f"  Best: N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])}) K={best['K']} Stop={best['Stop %']:.0%}  →  RDR={best['RDR']:.2f}  CAGR={best['CAGR %']:.1f}%  Return={best['Total Return %']:.1f}%  Trades={int(best['Trades'])}")
+
+        # Walk-forward
+        print(f"  Running walk-forward ...")
+        wf_windows = walk_forward_ml(close_np, dates, ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES)
+        print(f"  Walk-forward: {len(wf_windows)} windows completed")
+
+        all_results[ticker] = {"df_all": df_all, "wf_windows": wf_windows, "data_through": data_through, "years": years}
+
+    if not all_results:
+        print("No results to report.")
+        return
+
+    # Write per-ticker HTML reports
+    OUT_DIR.mkdir(exist_ok=True)
+    for ticker, res in all_results.items():
+        out_path = OUT_DIR / f"backtest_ml_{ticker}_{run_date}.html"
+        out_path.write_text(
+            _build_ml_html(ticker, res["df_all"], res["wf_windows"], run_date, res["data_through"], res["years"]),
+            encoding="utf-8"
+        )
+        print(f"  Report: {out_path}")
+
+    # Summary across all tickers
+    print(f"\n{'='*60}")
+    print(f"MULTI-LOOKBACK SUMMARY  ({run_date})")
+    print(f"{'='*60}")
+    for ticker, res in all_results.items():
+        df = res["df_all"]
+        best = df.loc[df["Score"].idxmax()]
+        wf_pos = sum(1 for w in res["wf_windows"] if w.get("Test Return %") and w["Test Return %"] > 0)
+        print(f"  {ticker:6}  N=({int(best['N1'])},{int(best['N2'])},{int(best['N3'])})  K={best['K']}  Stop={best['Stop %']:.0%}  "
+              f"CAGR={best['CAGR %']:.1f}%  RDR={best['RDR']:.2f}  "
+              f"Trades={int(best['Trades'])}  WF profitable: {wf_pos}/{len(res['wf_windows'])}")
+
+
+def _build_ml_html(ticker: str, df_all: pd.DataFrame, wf_windows: list,
+                   run_date: str, data_through: str, years: float) -> str:
+    """Minimal HTML report for multi-lookback results."""
+    best  = df_all.loc[df_all["Score"].idxmax()]
+    top20 = df_all.nlargest(20, "Score")
+
+    rows_html = ""
+    for _, r in top20.iterrows():
+        rows_html += (
+            f"<tr>"
+            f"<td>({int(r['N1'])},{int(r['N2'])},{int(r['N3'])})</td>"
+            f"<td>{r['K']}</td><td>{r['Stop %']:.0%}</td>"
+            f"<td>{r['CAGR %']:.1f}%</td><td>{r['Total Return %']:.1f}%</td>"
+            f"<td>{r['RDR']:.2f}</td><td>{r['Win %']:.1f}%</td>"
+            f"<td>{r['Avg Hold Days']:.0f}</td><td>{r['Max Drawdown %']:.1f}%</td>"
+            f"<td>{int(r['Trades'])}</td><td>{r['Score']:.1f}</td>"
+            f"</tr>\n"
+        )
+
+    wf_rows = ""
+    for w in wf_windows:
+        ret   = w.get("Test Return %")
+        cagr  = w.get("Test CAGR %")
+        color = "#f0fff4" if (ret and ret > 0) else "#fdf2f2"
+        wf_rows += (
+            f"<tr style='background:{color}'>"
+            f"<td>{w['Window']}</td><td>{w['Train Start']}–{w['Train End']}</td>"
+            f"<td>{w['Test Start']}–{w['Test End']}</td>"
+            f"<td>({w['Best N_base']},{w['Best N_base']+w['Best Gap']},{w['Best N_base']+2*w['Best Gap']})</td>"
+            f"<td>{w['Best K']}</td><td>{w['Best Stop']}</td>"
+            f"<td>{w.get('Train Return %', '—')}%</td>"
+            f"<td>{ret if ret is not None else '—'}%</td>"
+            f"<td>{cagr if cagr is not None else '—'}%</td>"
+            f"<td>{w.get('Test Trades', 0)}</td>"
+            f"</tr>\n"
+        )
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Multi-Lookback Backtest — {ticker} — {run_date}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }}
+  h1 {{ font-size: 1.4rem; }} h2 {{ font-size: 1rem; margin-top: 2rem; }}
+  table {{ border-collapse: collapse; font-size: 0.82rem; width: 100%; margin-bottom: 1.5rem; }}
+  th {{ background: #f0f0f0; padding: 0.4rem 0.6rem; text-align: left; border-bottom: 2px solid #ddd; }}
+  td {{ padding: 0.3rem 0.6rem; border-bottom: 1px solid #eee; }}
+  .stat {{ display: inline-block; margin: 0.3rem 1rem 0.3rem 0; }}
+  .stat .v {{ font-size: 1.4rem; font-weight: 700; }}
+  .stat .l {{ font-size: 0.75rem; color: #666; }}
+</style></head><body>
+<h1>Multi-Lookback Consensus — {ticker}</h1>
+<p style="color:#666;font-size:0.85rem">Data through {data_through} &nbsp;|&nbsp; Run {run_date} &nbsp;|&nbsp; {years:.1f} years</p>
+<p style="color:#666;font-size:0.82rem">Entry: close &lt; lower BB(N1) AND lower BB(N2) AND lower BB(N3) &nbsp;|&nbsp; Exit: close crosses above ANY upper BB or stop loss</p>
+
+<div>
+  <span class="stat"><span class="v">{best['CAGR %']:.1f}%</span><br><span class="l">Best CAGR</span></span>
+  <span class="stat"><span class="v">{best['Total Return %']:.1f}%</span><br><span class="l">Total Return</span></span>
+  <span class="stat"><span class="v">{best['RDR']:.2f}</span><br><span class="l">RDR</span></span>
+  <span class="stat"><span class="v">{best['Win %']:.1f}%</span><br><span class="l">Win Rate</span></span>
+  <span class="stat"><span class="v">{int(best['Trades'])}</span><br><span class="l">Trades</span></span>
+  <span class="stat"><span class="v">({int(best['N1'])},{int(best['N2'])},{int(best['N3'])})</span><br><span class="l">N1,N2,N3</span></span>
+  <span class="stat"><span class="v">{best['K']}</span><br><span class="l">K</span></span>
+  <span class="stat"><span class="v">{best['Stop %']:.0%}</span><br><span class="l">Stop</span></span>
+</div>
+
+<h2>Top 20 Parameter Combinations</h2>
+<table>
+  <thead><tr>
+    <th>(N1,N2,N3)</th><th>K</th><th>Stop</th>
+    <th>CAGR %</th><th>Return %</th><th>RDR</th><th>Win %</th>
+    <th>Avg Hold</th><th>Max DD %</th><th>Trades</th><th>Score</th>
+  </tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+
+<h2>Walk-Forward Validation</h2>
+<table>
+  <thead><tr>
+    <th>#</th><th>Train</th><th>Test</th>
+    <th>Best (N1,N2,N3)</th><th>K</th><th>Stop</th>
+    <th>Train Ret%</th><th>Test Ret%</th><th>Test CAGR%</th><th>Trades</th>
+  </tr></thead>
+  <tbody>{wf_rows}</tbody>
+</table>
+</body></html>"""
+
+
 if __name__ == "__main__":
     main()
     # main_keltner()  # ARCHIVED — KC results not yet high-confidence
+    main_multilookback()
