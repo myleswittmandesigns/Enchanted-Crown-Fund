@@ -31,9 +31,9 @@ st.title("👑 Enchanted Crown Fund")
 st.subheader("Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
-tab_viz, tab_bt, tab_ml, tab_cs, tab_rules = st.tabs([
+tab_viz, tab_bt, tab_ml, tab_cs, tab_rs, tab_rules = st.tabs([
     "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback",
-    "🎯 Cross-Sectional", "📋 Strategy Rules"
+    "🎯 Cross-Sectional", "🔬 Response Surface", "📋 Strategy Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
@@ -2133,6 +2133,309 @@ if False:  # ARCHIVED — re-enable by restoring tab_kc_bt to st.tabs() call
             latest = KC_REPORTS_DIR / chosen
         html_content = latest.read_text(encoding="utf-8")
         components.html(html_content, height=2400, scrolling=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RESPONSE SURFACE TAB  — radio-knob overfitting diagnostic
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_rs:
+
+    RS_DIR = Path(__file__).parent / "reports"
+
+    @st.cache_data(ttl=300)
+    def load_rs_data():
+        grid_files    = sorted(RS_DIR.glob("cs_grid_*.csv"),    reverse=True)
+        summary_files = sorted(RS_DIR.glob("cs_summary_*.csv"), reverse=True)
+        if not grid_files or not summary_files:
+            return None, None
+        try:
+            df_g = pd.read_csv(grid_files[0])
+            df_s = pd.read_csv(summary_files[0])
+            return df_g, df_s
+        except (pd.errors.EmptyDataError, Exception):
+            return None, None
+
+    df_grid_rs, df_sum_rs = load_rs_data()
+
+    if df_grid_rs is None or df_grid_rs.empty:
+        st.info("No cross-sectional grid data found. Run the backtester to generate results.")
+    else:
+        # ── Identify best combo ────────────────────────────────────────────────
+        best_row_rs  = df_grid_rs.loc[df_grid_rs["Score"].idxmax()]
+        best_n_base  = int(best_row_rs["N_base"])
+        best_gap     = int(best_row_rs["Gap"])
+        best_k       = float(best_row_rs["K"])
+        best_stop    = float(best_row_rs["Stop %"])
+        best_vals_rs = {
+            "N_base":  best_n_base,
+            "Gap":     best_gap,
+            "K":       best_k,
+            "Stop %":  best_stop,
+        }
+
+        # ── Parameter definitions ──────────────────────────────────────────────
+        RS_PARAMS = [
+            {"col": "N_base", "label": "N_base",  "title": "N_base — Base lookback (days)"},
+            {"col": "Gap",    "label": "Gap",      "title": "Gap — Window spacing (days)"},
+            {"col": "K",      "label": "K",        "title": "K — Band width (σ)"},
+            {"col": "Stop %", "label": "Stop %",   "title": "Stop % — Stop loss"},
+        ]
+
+        def _ntv(series):
+            """Normalized Total Variation: sum|Δy| / range(y).
+            ~1 = smooth/monotone  |  >2.5 moderate  |  >5 spiky/overfit."""
+            y = series.dropna().values
+            if len(y) < 2:
+                return float("nan")
+            rng = float(y.max() - y.min())
+            return float(np.abs(np.diff(y)).sum() / rng) if rng > 1e-9 else 0.0
+
+        def _badge(ntv):
+            if np.isnan(ntv):  return "❓ N/A"
+            if ntv < 0.001:    return "➖ Flat — parameter has negligible effect"
+            if ntv < 2.5:      return "🟢 Smooth — well-generalized"
+            if ntv < 5.0:      return "🟡 Moderate — some roughness, watch carefully"
+            return "🔴 Spiky — overfit risk, may be chasing a lucky event"
+
+        # ── Header ────────────────────────────────────────────────────────────
+        st.markdown("## 🔬 Response Surface Analysis")
+        st.caption(
+            '**The radio-knob test** (from the gold standard): hold all parameters fixed at their '
+            'optimal values and slowly vary one. **Smooth output = generalized.** '
+            'Spiky output = likely overfit to unrepeatable events. Flat = irrelevant, consider removing.'
+        )
+
+        # ── Best combo metrics ─────────────────────────────────────────────────
+        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+        mc1.metric("N_base",  best_n_base)
+        mc2.metric("Gap",     best_gap)
+        mc3.metric("K",       f"{best_k:.1f}")
+        mc4.metric("Stop %",  f"{best_stop*100:.0f}%")
+        mc5.metric("CAGR %",  f"{best_row_rs['CAGR %']:.1f}%")
+        mc6.metric("RDR",     f"{best_row_rs['RDR']:.2f}")
+        st.divider()
+
+        # ── Metric toggle ─────────────────────────────────────────────────────
+        rs_metric = st.radio(
+            "Objective metric for surface plots",
+            ["RDR", "CAGR %", "Score"],
+            horizontal=True, key="rs_metric",
+            help="RDR = Return/Drawdown ratio (risk-adjusted). CAGR % = raw annualized return. Score = composite.",
+        )
+
+        st.divider()
+
+        # ══ Section 1: 1D Slices ══════════════════════════════════════════════
+        st.markdown("### 📻 1D Slices — Radio Knob Test")
+        st.caption(
+            "**Blue solid + band** = marginal median ± IQR (averaged across all other param values — most robust view).  "
+            "**Red dashed** = slice through the optimum (other 3 params pinned to best values).  "
+            "**★** = optimal value."
+        )
+
+        diag_rows = []
+        slice_cols = st.columns(2)
+
+        for idx, param in enumerate(RS_PARAMS):
+            col_name  = param["col"]
+            title     = param["title"]
+            best_val  = best_vals_rs[col_name]
+            others    = [p for p in RS_PARAMS if p["col"] != col_name]
+
+            # Marginal: group by this param, aggregate across everything else
+            grp = df_grid_rs.groupby(col_name)[rs_metric]
+            marginal = grp.agg(
+                median="median",
+                q25=lambda s: s.quantile(0.25),
+                q75=lambda s: s.quantile(0.75),
+            ).reset_index().sort_values(col_name)
+
+            # Slice: pin other 3 params to their optimal values
+            sl_mask = pd.Series([True] * len(df_grid_rs), index=df_grid_rs.index)
+            for op in others:
+                ov = best_vals_rs[op["col"]]
+                if op["col"] in ("K", "Stop %"):
+                    sl_mask &= (df_grid_rs[op["col"]] - ov).abs() < 1e-9
+                else:
+                    sl_mask &= df_grid_rs[op["col"]] == ov
+            slice_df = df_grid_rs[sl_mask].sort_values(col_name)
+
+            ntv   = _ntv(marginal["median"])
+            badge = _badge(ntv)
+            diag_rows.append({
+                "Parameter":   title,
+                "Optimal":     f"{best_val*100:.0f}%" if col_name == "Stop %" else str(best_val),
+                "NTV":         round(ntv, 2),
+                "Verdict":     badge,
+            })
+
+            # x-axis labels: format Stop % as %
+            def _fmt_x(v):
+                return f"{v*100:.0f}%" if col_name == "Stop %" else str(v)
+
+            x_marg  = [_fmt_x(v) for v in marginal[col_name]]
+            x_slice = [_fmt_x(v) for v in slice_df[col_name]]
+
+            fig1d = go.Figure()
+
+            # IQR band (filled)
+            fig1d.add_trace(go.Scatter(
+                x=x_marg + x_marg[::-1],
+                y=list(marginal["q75"]) + list(marginal["q25"])[::-1],
+                fill="toself",
+                fillcolor="rgba(99,110,250,0.15)",
+                line=dict(color="rgba(0,0,0,0)"),
+                name="IQR (25–75%)",
+                showlegend=True,
+            ))
+
+            # Marginal median
+            fig1d.add_trace(go.Scatter(
+                x=x_marg, y=list(marginal["median"]),
+                mode="lines+markers",
+                line=dict(color="#636EFA", width=2.5),
+                marker=dict(size=6),
+                name="Marginal median",
+            ))
+
+            # Optimal slice
+            if not slice_df.empty:
+                fig1d.add_trace(go.Scatter(
+                    x=x_slice, y=list(slice_df[rs_metric]),
+                    mode="lines+markers",
+                    line=dict(color="#EF553B", width=1.5, dash="dash"),
+                    marker=dict(size=4),
+                    name="Slice @ optimum",
+                ))
+
+            # Star at optimal value
+            opt_label = _fmt_x(best_val)
+            if opt_label in x_marg:
+                opt_y = float(marginal.loc[marginal[col_name] == best_val, "median"].iloc[0])
+                fig1d.add_trace(go.Scatter(
+                    x=[opt_label], y=[opt_y],
+                    mode="markers",
+                    marker=dict(symbol="star", size=18, color="#FFD700",
+                                line=dict(color="#333", width=1)),
+                    name="Optimal ★",
+                ))
+
+            fig1d.update_layout(
+                title=dict(
+                    text=f"{title}<br><sup>{badge} &nbsp;|&nbsp; NTV = {ntv:.2f}</sup>",
+                    font=dict(size=13),
+                ),
+                xaxis_title=param["label"],
+                yaxis_title=rs_metric,
+                height=320,
+                margin=dict(t=75, b=50, l=55, r=15),
+                legend=dict(orientation="h", y=-0.35, font=dict(size=10)),
+                hovermode="x unified",
+            )
+
+            with slice_cols[idx % 2]:
+                st.plotly_chart(fig1d, use_container_width=True)
+
+        st.divider()
+
+        # ══ Section 2: Smoothness diagnostics table ════════════════════════════
+        st.markdown("### 📋 Parameter Diagnostics")
+        st.caption(
+            "**NTV** (Normalized Total Variation) of the marginal median curve. "
+            "~1 = smooth/monotone — safe. >2.5 = moderate roughness. >5 = overfit risk."
+        )
+        st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ══ Section 3: 2D Heatmap ══════════════════════════════════════════════
+        st.markdown("### 🗺️ 2D Response Surface Heatmap")
+        st.caption(
+            "Vary two parameters simultaneously; remaining two are pinned to optimal. "
+            "A smooth, broad plateau = robust. A sharp spike = fragile / overfit."
+        )
+
+        hm_options = [p["title"] for p in RS_PARAMS]
+        hm_c1, hm_c2 = st.columns(2)
+        with hm_c1:
+            x_title = st.selectbox("X axis", hm_options, index=0, key="rs_hm_x")
+        with hm_c2:
+            y_title = st.selectbox("Y axis", [o for o in hm_options if o != x_title],
+                                   index=0, key="rs_hm_y")
+
+        x_p = next(p for p in RS_PARAMS if p["title"] == x_title)
+        y_p = next(p for p in RS_PARAMS if p["title"] == y_title)
+        fixed_ps = [p for p in RS_PARAMS if p["title"] not in (x_title, y_title)]
+
+        hm_mask = pd.Series([True] * len(df_grid_rs), index=df_grid_rs.index)
+        for fp in fixed_ps:
+            fv = best_vals_rs[fp["col"]]
+            if fp["col"] in ("K", "Stop %"):
+                hm_mask &= (df_grid_rs[fp["col"]] - fv).abs() < 1e-9
+            else:
+                hm_mask &= df_grid_rs[fp["col"]] == fv
+        hm_df = df_grid_rs[hm_mask]
+
+        if hm_df.empty:
+            st.warning("No data for this parameter combination — try a different axis pair.")
+        else:
+            pivot = hm_df.pivot_table(
+                index=y_p["col"], columns=x_p["col"],
+                values=rs_metric, aggfunc="median",
+            )
+
+            # Format axis tick labels
+            def _fmt_col(col, vals):
+                if col == "Stop %":
+                    return [f"{v*100:.0f}%" for v in vals]
+                return [str(v) for v in vals]
+
+            x_ticks = _fmt_col(x_p["col"], pivot.columns.tolist())
+            y_ticks = _fmt_col(y_p["col"], pivot.index.tolist())
+
+            fig_hm = go.Figure(go.Heatmap(
+                z=pivot.values.tolist(),
+                x=x_ticks,
+                y=y_ticks,
+                colorscale="RdYlGn",
+                colorbar=dict(title=rs_metric, thickness=14),
+                hoverongaps=False,
+                hovertemplate=f"{x_p['label']}: %{{x}}<br>{y_p['label']}: %{{y}}<br>{rs_metric}: %{{z:.2f}}<extra></extra>",
+            ))
+
+            # Mark optimal point
+            ox = _fmt_col(x_p["col"], [best_vals_rs[x_p["col"]]])[0]
+            oy = _fmt_col(y_p["col"], [best_vals_rs[y_p["col"]]])[0]
+            if ox in x_ticks and oy in y_ticks:
+                fig_hm.add_trace(go.Scatter(
+                    x=[ox], y=[oy],
+                    mode="markers+text",
+                    marker=dict(symbol="star", size=20, color="#FFD700",
+                                line=dict(color="#333", width=1.5)),
+                    text=["★ best"],
+                    textposition="top center",
+                    textfont=dict(size=11, color="#333"),
+                    name="Optimal",
+                    showlegend=False,
+                ))
+
+            # Fixed params annotation
+            fixed_label = "  |  ".join(
+                f"{fp['label']} = {_fmt_col(fp['col'], [best_vals_rs[fp['col']]])[0]}"
+                for fp in fixed_ps
+            )
+            fig_hm.update_layout(
+                title=dict(
+                    text=f"{rs_metric}: {y_p['label']} × {x_p['label']}<br>"
+                         f"<sup>Fixed: {fixed_label}</sup>",
+                    font=dict(size=13),
+                ),
+                xaxis_title=x_p["title"],
+                yaxis_title=y_p["title"],
+                height=480,
+                margin=dict(t=90, b=70, l=80, r=20),
+            )
+            st.plotly_chart(fig_hm, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
