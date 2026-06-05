@@ -65,6 +65,7 @@ SCORE_DIVISOR   = 100
 N_VALUES = list(range(16, 55))                          # Lookback period: [16, 17, ..., 54]
 K_VALUES = [round(k * 0.1, 1) for k in range(15, 33)]  # Band width: [1.5, 1.6, ..., 3.2]
 STOP_PCT_VALUES = [0.20, 0.30, 0.40, 0.50, 0.60]       # Stop loss: [20%, 30%, 40%, 50%, 60%]
+BB_WF_TOP_COMBOS = 25                                   # Per-ticker BB walk-forward: re-optimize only top-N combos
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -257,6 +258,78 @@ def walk_forward(df_raw: pd.DataFrame, params: dict, n_values: list, k_values: l
             "Test CAGR %":    test_cagr,
         })
 
+        t = t + pd.DateOffset(months=step_months)
+
+    return windows
+
+
+def walk_forward_bb(df_raw: pd.DataFrame, params: dict, top_combos: list) -> list:
+    """Narrowed walk-forward: re-optimize only among `top_combos` [(n,k,stop), ...]
+    per window instead of the full N×K×Stop grid. Same window schema as
+    walk_forward(), but ~(grid/len(top_combos))× faster — used for the per-ticker
+    BB reports so the all-tickers run stays tractable in CI."""
+    train_years   = int(params["WF_TRAIN_YEARS"])
+    test_years    = int(params["WF_TEST_YEARS"])
+    step_months   = int(params["WF_STEP_MONTHS"])
+    wf_min_trades = int(params["WF_MIN_TRADES"])
+    dates = df_raw["Date"]
+    close = df_raw["Close"]
+    if not top_combos:
+        return []
+
+    windows = []
+    t = dates.min()
+    while True:
+        train_end_date = t + pd.DateOffset(years=train_years)
+        test_end_date  = train_end_date + pd.DateOffset(years=test_years)
+        if test_end_date > dates.max():
+            break
+        te_mask = dates >= train_end_date
+        xt_mask = dates >= test_end_date
+        if not te_mask.any() or not xt_mask.any():
+            break
+        train_end_idx = int(df_raw[te_mask].index[0])
+        test_end_idx  = int(df_raw[xt_mask].index[0])
+
+        # Precompute SMA/STD per unique N over the train slice (shared across K/Stop)
+        train_close = close.iloc[:train_end_idx]
+        wf_cache    = {n: bollinger_base(train_close, n) for n in {c[0] for c in top_combos}}
+
+        best_score = -1
+        best_n, best_k, best_stop = top_combos[0][0], top_combos[0][1], top_combos[0][2]
+        best_train = None
+        for n, k, stop_pct in top_combos:
+            sma, std = wf_cache[n]
+            r = run(train_close, n, k, stop_pct, wf_min_trades,
+                    _precomp=(sma, sma + k * std, sma - k * std))
+            if r and r["Score"] > best_score:
+                best_score = r["Score"]
+                best_n, best_k, best_stop = n, k, stop_pct
+                best_train = r
+
+        test_r = run(close.iloc[:test_end_idx], best_n, best_k, best_stop, 1,
+                     entry_from_idx=train_end_idx)
+        test_span_yrs = (dates.iloc[test_end_idx - 1] - dates.iloc[train_end_idx]).days / 365.25
+        if test_r and test_span_yrs > 0:
+            test_cagr = round(((test_r["Final Balance $"] / INITIAL_CAPITAL) ** (1 / test_span_yrs) - 1) * 100, 1)
+        else:
+            test_cagr = None
+
+        windows.append({
+            "Window":         len(windows) + 1,
+            "Train Start":    t.strftime("%Y-%m"),
+            "Train End":      train_end_date.strftime("%Y-%m"),
+            "Test Start":     train_end_date.strftime("%Y-%m"),
+            "Test End":       test_end_date.strftime("%Y-%m"),
+            "Best N":         best_n,
+            "Best K":         round(best_k, 1),
+            "Best Stop":      f"{best_stop:.0%}",
+            "Train Return %": round(best_train["Total Return %"], 1) if best_train else None,
+            "Train Score":    round(best_train["Score"], 1)          if best_train else None,
+            "Test Trades":    test_r["Trades"]                        if test_r    else 0,
+            "Test Return %":  round(test_r["Total Return %"], 1)      if test_r    else None,
+            "Test CAGR %":    test_cagr,
+        })
         t = t + pd.DateOffset(months=step_months)
 
     return windows
@@ -976,7 +1049,12 @@ def _process_ticker_bb(ticker: str):
         .sort_values("Score", ascending=False)
         .reset_index(drop=True)
     )
-    wf_windows = walk_forward(df_raw, params, N_VALUES, K_VALUES, STOP_PCT_VALUES)
+    # Narrowed walk-forward: only re-optimize the top combos by Score per window.
+    top_combos = [
+        (int(r["N"]), float(r["K"]), float(r["Stop %"]))
+        for _, r in df_all.nlargest(BB_WF_TOP_COMBOS, "Score").iterrows()
+    ]
+    wf_windows = walk_forward_bb(df_raw, params, top_combos)
     print(f"  [{ticker}] BB grid {len(combos):,} → {len(out)} valid | WF {len(wf_windows)} windows", flush=True)
     return ticker, out, df_all, wf_windows, data_through
 
