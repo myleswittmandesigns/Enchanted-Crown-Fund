@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas
+        run: pip install massive pandas tqdm
 
       - name: Configure git
         run: |
@@ -31,8 +31,20 @@ jobs:
           MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: python update_data.py 2>&1 | tee /tmp/update_output.txt
 
-      - name: Run backtester
-        run: python backtester.py 2>&1 | tee /tmp/backtest_output.txt
+      - name: "Backtest — Phase 1: BB Bollinger (all tickers)"
+        run: |
+          set -o pipefail
+          python backtester.py --phase bb 2>&1 | tee /tmp/backtest_bb.txt
+
+      - name: "Backtest — Phase 2: ML Multi-lookback"
+        run: |
+          set -o pipefail
+          python backtester.py --phase ml 2>&1 | tee /tmp/backtest_ml.txt
+
+      - name: "Backtest — Phase 3: Cross-sectional"
+        run: |
+          set -o pipefail
+          python backtester.py --phase cs 2>&1 | tee /tmp/backtest_cs.txt
 
       - name: Commit data + report
         run: |
