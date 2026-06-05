@@ -30,7 +30,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Run backtester
-        run: python backtester.py 2>&1 | tee /tmp/backtest_output.txt
+        run: |
+          set -o pipefail   # fail the step if python crashes (tee would otherwise mask it)
+          python backtester.py 2>&1 | tee /tmp/backtest_output.txt
 
       - name: Commit report
         run: |

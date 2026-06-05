@@ -524,8 +524,10 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
         positive  = has_test and w["Test Return %"] > 0
         beats_cagr = has_test and w["Test CAGR %"] is not None and w["Test CAGR %"] >= cagr_threshold
         row_cls   = ' class="wf-pass"' if beats_cagr else (' class="wf-ok"' if positive else ' class="wf-fail"')
-        test_ret_str  = f'{w["Test Return %"]:+.1f}%' if has_test else '—'
-        test_cagr_str = f'{w["Test CAGR %"]:+.1f}%'  if w["Test CAGR %"] is not None else '—'
+        test_ret_str   = f'{w["Test Return %"]:+.1f}%' if has_test else '—'
+        test_cagr_str  = f'{w["Test CAGR %"]:+.1f}%'  if w["Test CAGR %"] is not None else '—'
+        train_ret_str  = f'{w["Train Return %"]:+.1f}%' if w["Train Return %"] is not None else '—'
+        train_score_str = f'{w["Train Score"]:.1f}'    if w["Train Score"]   is not None else '—'
         rows.append(
             f'<tr{row_cls}>'
             f'<td>{w["Window"]}</td>'
@@ -534,8 +536,8 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
             f'<td>{w["Best N"]}</td>'
             f'<td>{w["Best K"]:.1f}</td>'
             f'<td>{w.get("Best Stop","—")}</td>'
-            f'<td>{w["Train Return %"]:+.1f}%</td>'
-            f'<td>{w["Train Score"]:.1f}</td>'
+            f'<td>{train_ret_str}</td>'
+            f'<td>{train_score_str}</td>'
             f'<td>{w["Test Trades"]}</td>'
             f'<td>{test_ret_str}</td>'
             f'<td>{test_cagr_str}</td>'
@@ -557,11 +559,11 @@ def build_wf_html(windows: list, train_yrs: int, test_yrs: int, step_mo: int, ca
     </div>
     <div class="card">
       <div class="label">Avg Out-of-Sample Return</div>
-      <div class="value">{avg_ret:+.1f}%</div>
+      <div class="value">{f'{avg_ret:+.1f}%' if avg_ret is not None else '—'}</div>
     </div>
     <div class="card">
       <div class="label">Avg Out-of-Sample CAGR</div>
-      <div class="value">{avg_cagr:+.1f}%</div>
+      <div class="value">{f'{avg_cagr:+.1f}%' if avg_cagr is not None else '—'}</div>
     </div>
     <div class="card">
       <div class="label">Most Stable Params</div>
@@ -1082,20 +1084,25 @@ def main_bb_all():
         if res is None:
             continue
         ticker, out, df_all, wf_windows, data_through = res
-        html = build_html(out, df_all, wf_windows, run_date, data_through, params,
-                          stop_values=STOP_PCT_VALUES, ticker=ticker)
-        (OUT_DIR / f"backtest_bb_{ticker}.html").write_text(html, encoding="utf-8")
-        if len(out):
-            best = out.iloc[0]
-            wf_pos = sum(1 for w in wf_windows if w.get("Test Return %") and w["Test Return %"] > 0)
-            summary.append({
-                "Ticker": ticker, "N": int(best["N"]), "K": float(best["K"]),
-                "Stop %": float(best["Stop %"]), "CAGR %": round(float(best["CAGR %"]), 1),
-                "Total Return %": round(float(best["Total Return %"]), 1),
-                "RDR": round(float(best["RDR"]), 2), "Win %": round(float(best["Win %"]), 1),
-                "Max DD %": round(float(best["Max Drawdown %"]), 1), "Trades": int(best["Trades"]),
-                "WF Profitable": f"{wf_pos}/{len(wf_windows)}", "Data Through": data_through,
-            })
+        # One bad ticker must not abort the whole pipeline (ML + cross-sectional
+        # still need to run after this), so isolate each report.
+        try:
+            html = build_html(out, df_all, wf_windows, run_date, data_through, params,
+                              stop_values=STOP_PCT_VALUES, ticker=ticker)
+            (OUT_DIR / f"backtest_bb_{ticker}.html").write_text(html, encoding="utf-8")
+            if len(out):
+                best = out.iloc[0]
+                wf_pos = sum(1 for w in wf_windows if w.get("Test Return %") and w["Test Return %"] > 0)
+                summary.append({
+                    "Ticker": ticker, "N": int(best["N"]), "K": float(best["K"]),
+                    "Stop %": float(best["Stop %"]), "CAGR %": round(float(best["CAGR %"]), 1),
+                    "Total Return %": round(float(best["Total Return %"]), 1),
+                    "RDR": round(float(best["RDR"]), 2), "Win %": round(float(best["Win %"]), 1),
+                    "Max DD %": round(float(best["Max Drawdown %"]), 1), "Trades": int(best["Trades"]),
+                    "WF Profitable": f"{wf_pos}/{len(wf_windows)}", "Data Through": data_through,
+                })
+        except Exception as e:
+            print(f"  [{ticker}] report FAILED: {type(e).__name__}: {e}", flush=True)
 
     if summary:
         pd.DataFrame(summary).sort_values("CAGR %", ascending=False).to_csv(
