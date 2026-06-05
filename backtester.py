@@ -865,6 +865,11 @@ def main():
     run_date = datetime.today().strftime("%Y-%m-%d")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] GSIT backtester starting")
 
+    if not DATA_PATH.exists():
+        print(f"  SKIP: {DATA_PATH.name} not in universe — legacy single-ticker "
+              f"BB run skipped (cross-sectional engine is the core path).")
+        return
+
     params         = load_strategy_params()
     RDR_THRESHOLD  = params["RDR_THRESHOLD"]
     MIN_TRADES     = params["MIN_TRADES"]
@@ -1154,6 +1159,10 @@ def walk_forward_keltner(df_raw: pd.DataFrame, params: dict, n_values: list, k_v
 def main_keltner():
     run_date = datetime.today().strftime("%Y-%m-%d")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Keltner backtester starting")
+
+    if not DATA_PATH.exists():
+        print(f"  SKIP: {DATA_PATH.name} not in universe — legacy Keltner run skipped.")
+        return
 
     params         = load_kc_params()
     RDR_THRESHOLD  = params["RDR_THRESHOLD"]
