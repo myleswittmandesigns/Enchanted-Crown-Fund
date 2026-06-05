@@ -22,17 +22,27 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pandas
+        run: pip install pandas tqdm
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Run backtester
+      - name: "Phase 1 — BB Bollinger (all tickers)"
         run: |
-          set -o pipefail   # fail the step if python crashes (tee would otherwise mask it)
-          python backtester.py 2>&1 | tee /tmp/backtest_output.txt
+          set -o pipefail
+          python backtester.py --phase bb 2>&1 | tee /tmp/backtest_bb.txt
+
+      - name: "Phase 2 — ML Multi-lookback"
+        run: |
+          set -o pipefail
+          python backtester.py --phase ml 2>&1 | tee /tmp/backtest_ml.txt
+
+      - name: "Phase 3 — Cross-sectional"
+        run: |
+          set -o pipefail
+          python backtester.py --phase cs 2>&1 | tee /tmp/backtest_cs.txt
 
       - name: Commit report
         run: |

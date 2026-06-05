@@ -17,6 +17,14 @@ from itertools import product
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from tqdm import tqdm as _tqdm
+    def _progress(it, **kw):
+        return _tqdm(it, ncols=80, ascii=True, **kw)
+except ImportError:
+    def _progress(it, **kw):
+        return it
+
 REPO_DIR   = Path(__file__).parent
 DATA_PATH  = REPO_DIR / "data" / "GSIT_daily_high_low.csv"
 OUT_DIR    = REPO_DIR / "reports"
@@ -1075,7 +1083,10 @@ def main_bb_all():
     print(f"  Tickers: {len(tickers)}  |  Workers: {n_workers}  |  Grid/ticker: {len(N_VALUES)*len(K_VALUES)*len(STOP_PCT_VALUES):,} combos")
 
     with Pool(n_workers) as pool:
-        results_list = pool.map(_process_ticker_bb, tickers)
+        results_list = list(_progress(
+            pool.imap(_process_ticker_bb, tickers),
+            total=len(tickers), desc="BB tickers",
+        ))
 
     params   = load_strategy_params()
     OUT_DIR.mkdir(exist_ok=True)
@@ -1731,7 +1742,10 @@ def main_multilookback():
     print(f"  Tickers: {len(tickers)}  |  Workers: {n_workers}  |  Grid: {len(list(__import__('itertools').product(ML_N_BASE_VALUES, ML_GAP_VALUES, ML_K_VALUES, ML_STOP_PCT_VALUES))):,} combos  |  WF top-N: {ML_WF_TOP_COMBOS}")
 
     with Pool(n_workers) as pool:
-        results_list = pool.map(_process_ticker_ml, tickers)
+        results_list = list(_progress(
+            pool.imap(_process_ticker_ml, tickers),
+            total=len(tickers), desc="ML tickers",
+        ))
 
     all_results = {}
     for res in results_list:
@@ -2260,7 +2274,20 @@ def main_cross_sectional():
 
 
 if __name__ == "__main__":
-    main_bb_all()      # per-ticker Bollinger reports (BB Backtest tab dropdown)
-    # main_keltner()   # ARCHIVED — KC results not yet high-confidence
-    main_multilookback()
-    main_cross_sectional()
+    import argparse
+    parser = argparse.ArgumentParser(description="Enchanted Crown Fund backtester")
+    parser.add_argument(
+        "--phase",
+        choices=["bb", "ml", "cs", "all"],
+        default="all",
+        help="Which phase to run: bb=Bollinger per-ticker, ml=multi-lookback, cs=cross-sectional, all=all three",
+    )
+    args = parser.parse_args()
+
+    if args.phase in ("bb", "all"):
+        main_bb_all()      # per-ticker Bollinger reports (BB Backtest tab dropdown)
+    # main_keltner()       # ARCHIVED — KC results not yet high-confidence
+    if args.phase in ("ml", "all"):
+        main_multilookback()
+    if args.phase in ("cs", "all"):
+        main_cross_sectional()
