@@ -1,0 +1,3 @@
+Window,Train Start,Train End,Test Start,Test End,Best N_base,Best Gap,Best K,Best Stop,Train Return %,Train Score,Test Trades,Test Return %,Test CAGR %
+1,2019-11,2024-11,2024-11,2025-11,33,8,2.5,20%,253.5,18.5,1,71.6,71.9
+2,2020-05,2025-05,2025-05,2026-05,35,5,2.6,20%,621.7,47.3,0,,

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Multi-Lookback Backtest — AI — 2026-06-05</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1rem; margin-top: 2rem; }
+  table { border-collapse: collapse; font-size: 0.82rem; width: 100%; margin-bottom: 1.5rem; }
+  th { background: #f0f0f0; padding: 0.4rem 0.6rem; text-align: left; border-bottom: 2px solid #ddd; }
+  td { padding: 0.3rem 0.6rem; border-bottom: 1px solid #eee; }
+  .stat { display: inline-block; margin: 0.3rem 1rem 0.3rem 0; }
+  .stat .v { font-size: 1.4rem; font-weight: 700; }
+  .stat .l { font-size: 0.75rem; color: #666; }
+</style></head><body>
+<h1>Multi-Lookback Consensus — AI</h1>
+<p style="color:#666;font-size:0.85rem">Data through 2026-06-04 &nbsp;|&nbsp; Run 2026-06-05 &nbsp;|&nbsp; 5.5 years</p>
+<p style="color:#666;font-size:0.82rem">Entry: close &lt; lower BB(N1) AND lower BB(N2) AND lower BB(N3) &nbsp;|&nbsp; Exit: close crosses above ANY upper BB or stop loss</p>
+
+<div>
+  <span class="stat"><span class="v">16.2%</span><br><span class="l">Best CAGR</span></span>
+  <span class="stat"><span class="v">128.2%</span><br><span class="l">Total Return</span></span>
+  <span class="stat"><span class="v">0.92</span><br><span class="l">RDR</span></span>
+  <span class="stat"><span class="v">80.0%</span><br><span class="l">Win Rate</span></span>
+  <span class="stat"><span class="v">10</span><br><span class="l">Trades</span></span>
+  <span class="stat"><span class="v">(40,55,70)</span><br><span class="l">N1,N2,N3</span></span>
+  <span class="stat"><span class="v">2.0</span><br><span class="l">K</span></span>
+  <span class="stat"><span class="v">30%</span><br><span class="l">Stop</span></span>
+</div>
+
+<h2>Top 20 Parameter Combinations</h2>
+<table>
+  <thead><tr>
+    <th>(N1,N2,N3)</th><th>K</th><th>Stop</th>
+    <th>CAGR %</th><th>Return %</th><th>RDR</th><th>Win %</th>
+    <th>Avg Hold</th><th>Max DD %</th><th>Trades</th><th>Score</th>
+  </tr></thead>
+  <tbody><tr><td>(40,55,70)</td><td>2.0</td><td>30%</td><td>16.2%</td><td>128.2%</td><td>0.92</td><td>80.0%</td><td>47</td><td>43.6%</td><td>10</td><td>1.2</td></tr>
+<tr><td>(40,55,70)</td><td>2.1</td><td>30%</td><td>14.7%</td><td>112.4%</td><td>0.87</td><td>77.8%</td><td>45</td><td>43.6%</td><td>9</td><td>1.0</td></tr>
+<tr><td>(16,21,26)</td><td>1.5</td><td>50%</td><td>-32.9%</td><td>-88.8%</td><td>-0.98</td><td>45.0%</td><td>28</td><td>90.9%</td><td>20</td><td>0.9</td></tr>
+<tr><td>(16,21,26)</td><td>1.5</td><td>60%</td><td>-32.3%</td><td>-88.2%</td><td>-0.98</td><td>42.1%</td><td>31</td><td>90.4%</td><td>19</td><td>0.9</td></tr>
+<tr><td>(16,21,26)</td><td>1.7</td><td>40%</td><td>-34.0%</td><td>-89.8%</td><td>-0.97</td><td>38.9%</td><td>31</td><td>91.8%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(16,24,32)</td><td>1.6</td><td>40%</td><td>-35.6%</td><td>-91.0%</td><td>-0.99</td><td>44.4%</td><td>30</td><td>91.1%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(16,24,32)</td><td>1.7</td><td>40%</td><td>-33.0%</td><td>-88.8%</td><td>-0.99</td><td>44.4%</td><td>30</td><td>89.0%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(16,31,46)</td><td>1.6</td><td>40%</td><td>-36.1%</td><td>-91.5%</td><td>-0.94</td><td>43.8%</td><td>31</td><td>91.9%</td><td>16</td><td>0.9</td></tr>
+<tr><td>(17,22,27)</td><td>1.5</td><td>50%</td><td>-33.5%</td><td>-89.3%</td><td>-0.98</td><td>42.1%</td><td>29</td><td>91.3%</td><td>19</td><td>0.9</td></tr>
+<tr><td>(17,22,27)</td><td>1.5</td><td>60%</td><td>-32.9%</td><td>-88.8%</td><td>-0.98</td><td>38.9%</td><td>32</td><td>90.8%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(17,25,33)</td><td>1.6</td><td>40%</td><td>-33.8%</td><td>-89.6%</td><td>-0.99</td><td>44.4%</td><td>32</td><td>89.7%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(17,29,41)</td><td>1.6</td><td>40%</td><td>-35.2%</td><td>-90.7%</td><td>-0.99</td><td>43.8%</td><td>33</td><td>90.8%</td><td>16</td><td>0.9</td></tr>
+<tr><td>(17,32,47)</td><td>1.6</td><td>40%</td><td>-34.9%</td><td>-90.5%</td><td>-0.94</td><td>43.8%</td><td>33</td><td>91.0%</td><td>16</td><td>0.9</td></tr>
+<tr><td>(18,23,28)</td><td>1.7</td><td>40%</td><td>-32.9%</td><td>-88.8%</td><td>-0.96</td><td>35.3%</td><td>35</td><td>91.0%</td><td>17</td><td>0.9</td></tr>
+<tr><td>(19,24,29)</td><td>1.6</td><td>40%</td><td>-32.3%</td><td>-88.2%</td><td>-0.99</td><td>44.4%</td><td>33</td><td>88.4%</td><td>18</td><td>0.9</td></tr>
+<tr><td>(19,29,39)</td><td>1.6</td><td>40%</td><td>-32.2%</td><td>-88.2%</td><td>-0.99</td><td>41.2%</td><td>34</td><td>88.3%</td><td>17</td><td>0.9</td></tr>
+<tr><td>(30,42,54)</td><td>1.7</td><td>50%</td><td>-30.0%</td><td>-85.8%</td><td>-1.00</td><td>38.5%</td><td>50</td><td>85.8%</td><td>13</td><td>0.9</td></tr>
+<tr><td>(31,41,51)</td><td>2.5</td><td>50%</td><td>-30.1%</td><td>-86.0%</td><td>-1.00</td><td>40.0%</td><td>73</td><td>86.0%</td><td>5</td><td>0.9</td></tr>
+<tr><td>(33,38,43)</td><td>2.6</td><td>50%</td><td>-30.7%</td><td>-86.7%</td><td>-1.00</td><td>50.0%</td><td>70</td><td>86.7%</td><td>6</td><td>0.9</td></tr>
+<tr><td>(33,38,43)</td><td>2.6</td><td>60%</td><td>-33.6%</td><td>-89.4%</td><td>-0.97</td><td>50.0%</td><td>110</td><td>91.9%</td><td>6</td><td>0.9</td></tr>
+</tbody>
+</table>
+
+<h2>Walk-Forward Validation</h2>
+<table>
+  <thead><tr>
+    <th>#</th><th>Train</th><th>Test</th>
+    <th>Best (N1,N2,N3)</th><th>K</th><th>Stop</th>
+    <th>Train Ret%</th><th>Test Ret%</th><th>Test CAGR%</th><th>Trades</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+</body></html>
