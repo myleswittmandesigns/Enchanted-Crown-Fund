@@ -14,16 +14,16 @@ from massive import RESTClient
 REPO_DIR  = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR  = os.path.join(REPO_DIR, "data")
 TICKERS   = [
-    # Original 11
-    "GSIT",
-    "RMBS", "CDE", "SMTC", "DY", "SANM",
-    "AEIS", "VIAV", "MOD", "TTMI", "STRL",
-    # +39 random Russell 2000 picks (IWM holdings 2026-05-18, random.seed(42))
-    "ABX", "AFRI", "AGM", "AI", "AIP", "ATYR", "AVNW", "BATRK",
-    "BDN", "BRSL", "CNNE", "CRSR", "CSR", "CTEV", "CVLT", "DC",
-    "EGHT", "ELMD", "III", "ILPT", "JJSF", "LXFR", "MRVI", "NB",
-    "NTB", "NTLA", "NXXT", "PCRX", "PGC", "PRSU", "RELY", "ROCK",
-    "SBH", "SD", "SDRL", "SITM", "TCBX", "VABK", "WABC",
+    # Clean 50-ticker universe — every name screened (screen_tickers.yml) for:
+    # full history by 2016-01-05, ZERO splits since 2016, still actively trading.
+    # = 10 retained originals (RMBS, CDE, SMTC, DY, SANM, AEIS, VIAV, MOD, TTMI,
+    #   STRL) + 40 random qualifiers from the Russell 2000 (random.seed(42)).
+    # GSIT dropped: no longer an IWM constituent, could not be screened.
+    "ABM", "AEIS", "AEO", "AGM", "AHRT", "AIOT", "AVNS", "AXSM", "BCBP", "BFC",
+    "CAKE", "CDE", "CDXS", "CPRX", "CWBC", "CWST", "CYRX", "DDD", "DNOW", "DY",
+    "ERII", "ESNT", "INVX", "IPAR", "KN", "MCS", "MOD", "NATR", "NKSH", "OI",
+    "OII", "OSBC", "PLAY", "PRAA", "RDNT", "RMBS", "SAMG", "SANM", "SHAK", "SMTC",
+    "SPXC", "SSTK", "STAA", "STRL", "TBRG", "TTMI", "UE", "UFPT", "VIAV", "WTBA",
 ]
 COLUMNS   = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
