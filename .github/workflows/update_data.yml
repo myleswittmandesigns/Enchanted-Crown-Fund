@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas tqdm matplotlib
+        run: pip install massive pandas tqdm matplotlib resend
 
       - name: Configure git
         run: |
@@ -55,5 +55,5 @@ jobs:
 
       - name: Send daily summary email
         env:
-          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: python send_summary_email.py

@@ -6,19 +6,15 @@ Sends a daily signal summary email after the backtester completes.
 Invoked as the final step of update_data.yml.
 
 Required GitHub Actions secret (just one):
-  GMAIL_APP_PASS   16-character Gmail app password
-                   Generate at: myaccount.google.com → Security →
-                   2-Step Verification → App passwords
+  RESEND_API_KEY   API key from resend.com dashboard
 """
 
 import os
 import base64
 import io
-import smtplib
+import resend
 import textwrap
 from datetime import date
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import numpy as np
@@ -34,9 +30,8 @@ REPO_DIR    = Path(__file__).parent
 DATA_DIR    = REPO_DIR / "data"
 REPORTS_DIR = REPO_DIR / "reports"
 
-GMAIL_ADDRESS = "myleswittman@gmail.com"
-RECIPIENT     = GMAIL_ADDRESS
-SENDER        = GMAIL_ADDRESS
+RECIPIENT = "myleswittman@gmail.com"
+SENDER    = "Enchanted Crown Fund <onboarding@resend.dev>"
 
 # ── Colors (matching app palette) ─────────────────────────────────────────────
 BB_COLORS = [
@@ -445,24 +440,19 @@ def build_html_email(sig, smr, df_z, chart_b64: str) -> tuple[str, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def send_email(subject: str, html_body: str):
-    app_pass = os.environ.get("GMAIL_APP_PASS", "")
-    if not app_pass:
-        print("[email] Skipping — GMAIL_APP_PASS secret not set.")
+    api_key = os.environ.get("RESEND_API_KEY", "")
+    if not api_key:
+        print("[email] Skipping — RESEND_API_KEY secret not set.")
         return
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"Enchanted Crown Fund <{SENDER}>"
-    msg["To"]      = RECIPIENT
-    msg.attach(MIMEText(html_body, "html"))
-
-    print(f"[email] Connecting to smtp.gmail.com:587 ...")
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as srv:
-        srv.ehlo()
-        srv.starttls()
-        srv.login(GMAIL_ADDRESS, app_pass)
-        srv.sendmail(SENDER, [RECIPIENT], msg.as_string())
-    print(f"[email] Sent → {RECIPIENT}")
+    resend.api_key = api_key
+    resp = resend.Emails.send({
+        "from":    SENDER,
+        "to":      [RECIPIENT],
+        "subject": subject,
+        "html":    html_body,
+    })
+    print(f"[email] Sent → {RECIPIENT}  (id: {resp.get('id', '?')})")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
