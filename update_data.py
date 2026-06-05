@@ -14,9 +14,16 @@ from massive import RESTClient
 REPO_DIR  = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR  = os.path.join(REPO_DIR, "data")
 TICKERS   = [
+    # Original 11
     "GSIT",
     "RMBS", "CDE", "SMTC", "DY", "SANM",
     "AEIS", "VIAV", "MOD", "TTMI", "STRL",
+    # +39 random Russell 2000 picks (IWM holdings 2026-05-18, random.seed(42))
+    "ABX", "AFRI", "AGM", "AI", "AIP", "ATYR", "AVNW", "BATRK",
+    "BDN", "BRSL", "CNNE", "CRSR", "CSR", "CTEV", "CVLT", "DC",
+    "EGHT", "ELMD", "III", "ILPT", "JJSF", "LXFR", "MRVI", "NB",
+    "NTB", "NTLA", "NXXT", "PCRX", "PGC", "PRSU", "RELY", "ROCK",
+    "SBH", "SD", "SDRL", "SITM", "TCBX", "VABK", "WABC",
 ]
 COLUMNS   = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
