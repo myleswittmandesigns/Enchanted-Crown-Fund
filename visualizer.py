@@ -28,7 +28,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("👑 Enchanted Crown Fund")
-st.subheader("GSIT — Mean Reversion Strategy")
+st.subheader("Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
 tab_viz, tab_bt, tab_ml, tab_cs, tab_rules = st.tabs([
@@ -147,9 +147,16 @@ with tab_viz:
         return round(balance, 2), trades, eq_series
 
 
-    # ── Load GSIT ─────────────────────────────────────────────────────────────
-    DATA_DIR = Path(__file__).parent / "data"
-    df_full  = pd.read_csv(DATA_DIR / "GSIT_daily_high_low.csv", parse_dates=["Date"])
+    # ── Ticker selector ───────────────────────────────────────────────────────
+    DATA_DIR     = Path(__file__).parent / "data"
+    viz_tickers  = sorted(p.stem.replace("_daily_high_low", "") for p in DATA_DIR.glob("*_daily_high_low.csv"))
+    if not viz_tickers:
+        st.error("No ticker data files found in data/. Run the bootstrap workflow first.")
+        st.stop()
+    viz_ticker = st.selectbox("Ticker:", viz_tickers, key="viz_ticker_sel")
+
+    # ── Load selected ticker ──────────────────────────────────────────────────
+    df_full  = pd.read_csv(DATA_DIR / f"{viz_ticker}_daily_high_low.csv", parse_dates=["Date"])
     df_full  = df_full.sort_values("Date").reset_index(drop=True)
 
     global_min = df_full["Date"].min().date()
