@@ -30,9 +30,10 @@ REPO_DIR    = Path(__file__).parent
 DATA_DIR    = REPO_DIR / "data"
 REPORTS_DIR = REPO_DIR / "reports"
 
-RECIPIENT  = "myleswittman@gmail.com"
-SENDER     = "Enchanted Crown Fund <onboarding@resend.dev>"
-APP_URL    = "https://enchanted-crown-fund.streamlit.app/"
+RECIPIENT   = "myleswittman@gmail.com"
+SENDER      = "Enchanted Crown Fund <onboarding@resend.dev>"
+APP_URL     = "https://enchanted-crown-fund.streamlit.app/"
+ALPACA_URL  = "https://app.alpaca.markets/paper/dashboard/overview"
 
 # ── Colors (matching app palette) ─────────────────────────────────────────────
 BB_COLORS = [
@@ -342,8 +343,11 @@ def build_html_email(sig, smr, df_z, chart_b64: str) -> tuple[str, str]:
             </td>
           </tr>
           <tr><td colspan="2" style="padding-top:12px;">
-            <a href="{APP_URL}" style="display:inline-block;background:#FFD700;color:#0e1117;font-weight:700;font-size:12px;padding:7px 18px;border-radius:6px;text-decoration:none;">
+            <a href="{APP_URL}" style="display:inline-block;background:#FFD700;color:#0e1117;font-weight:700;font-size:12px;padding:7px 18px;border-radius:6px;text-decoration:none;margin-right:8px;">
               Open Dashboard →
+            </a>
+            <a href="{ALPACA_URL}" style="display:inline-block;background:#FFCD00;color:#0e1117;font-weight:700;font-size:12px;padding:7px 18px;border-radius:6px;text-decoration:none;border:1px solid #e6b800;">
+              Alpaca Portfolio →
             </a>
           </td></tr>
         </table>
