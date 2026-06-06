@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install massive pandas tqdm matplotlib resend
+        run: pip install massive pandas tqdm matplotlib resend alpaca-py
 
       - name: Configure git
         run: |
@@ -57,3 +57,10 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: python send_summary_email.py
+
+      - name: Alpaca paper trader (dry run until TRADING_ENABLED=true)
+        env:
+          ALPACA_API_KEY:   ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TRADING_ENABLED:  ${{ secrets.TRADING_ENABLED }}
+        run: python alpaca_trader.py
