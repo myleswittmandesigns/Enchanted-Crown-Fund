@@ -2,17 +2,22 @@
 """
 alpaca_trader.py
 ----------------
-Computes today's live cross-sectional signal (same logic as the Daily Signal
-tab) and reconciles it against the current Alpaca paper-trading portfolio.
+Mirrors the cross-sectional backtester's exact entry/exit logic against
+the Alpaca paper-trading portfolio.
 
-Signal logic:
-  - Load N1/N2/N3/K from the latest cs_summary file
-  - Rank all tickers by composite z-score across all three windows
-  - If the top-ranked ticker's composite Z ≤ -K  →  HOLDING (buy signal)
-  - Otherwise                                    →  FLAT (no position)
+Entry logic (when FLAT):
+  - Compute composite z-score (mean of Z(N1), Z(N2), Z(N3)) for every ticker
+  - Buy the most oversold ticker if its composite Z ≤ -K
+  - Never switches tickers mid-position
 
-This means the trader acts on TODAY's real-time ranking, not the backtester's
-historical in-sample portfolio state.
+Exit logic (when HOLDING):
+  - Take profit : today's close crosses above the upper Bollinger Band
+                  for ANY of the 3 windows (N1, N2, or N3)
+  - Stop loss   : close ≤ entry_price × (1 − Stop %)
+  - No other exit conditions — z-score changes while holding are ignored
+
+Parameters (N1, N2, N3, K, Stop %) are loaded from the latest cs_summary
+file so they always stay in sync with the backtester.
 
 Required GitHub Actions secrets:
   ALPACA_API_KEY      Paper trading API key ID
@@ -21,12 +26,10 @@ Required GitHub Actions secrets:
 Trading is DISABLED by default. To enable paper trading, add a secret:
   TRADING_ENABLED = true
 
-When disabled the script logs exactly what it WOULD do — useful for
-shadow-trading before going live.
+When disabled the script logs exactly what it WOULD do.
 """
 
 import os
-import sys
 from datetime import date
 from pathlib import Path
 
@@ -47,45 +50,47 @@ MODE = "LIVE PAPER" if TRADING_ENABLED else "DRY RUN"
 BUY_NOTIONAL = 10_000.00  # Fixed dollar amount per trade
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Load model parameters ─────────────────────────────────────────────────────
 
-def _latest_csv(pattern: str) -> pd.DataFrame | None:
-    files = sorted(REPORTS_DIR.glob(pattern), reverse=True)
+def load_params() -> dict | None:
+    """Load N1, N2, N3, K, Stop % from the latest cs_summary file."""
+    files = sorted(REPORTS_DIR.glob("cs_summary_*.csv"), reverse=True)
     if not files:
+        print("[alpaca] No cs_summary file found — cannot determine model parameters.")
         return None
     try:
-        return pd.read_csv(files[0])
-    except Exception:
+        row = pd.read_csv(files[0]).iloc[0]
+        return {
+            "n1":       int(row["N1"]),
+            "n2":       int(row["N2"]),
+            "n3":       int(row["N3"]),
+            "k":        float(row["K"]),
+            "stop_pct": float(row["Stop %"]),
+        }
+    except Exception as e:
+        print(f"[alpaca] Failed to load params: {e}")
         return None
 
 
-def load_signal() -> tuple[str, str, float]:
+# ── Entry signal (when flat) ──────────────────────────────────────────────────
+
+def compute_entry_signal(params: dict) -> tuple[str, float]:
     """
-    Computes today's live signal by ranking all tickers on composite z-score.
-    Returns (state, ticker, last_price).  state = HOLDING | FLAT.
-
-    HOLDING means the top-ranked ticker is below the entry threshold (-K),
-    i.e. the same condition the Daily Signal tab uses to show a buy candidate.
+    Rank all tickers by composite z-score.
+    Returns (ticker, last_price) if the top ticker is below entry threshold,
+    or ("", 0.0) if nothing qualifies.
     """
-    # Load model parameters from latest summary
-    smr_df = _latest_csv("cs_summary_*.csv")
-    if smr_df is None or smr_df.empty:
-        print("[alpaca] No cs_summary file found — cannot compute live signal.")
-        return "FLAT", "", 0.0
+    n1, n2, n3 = params["n1"], params["n2"], params["n3"]
+    k           = params["k"]
+    threshold   = -k
 
-    smr = smr_df.iloc[0]
-    n1, n2, n3 = int(smr["N1"]), int(smr["N2"]), int(smr["N3"])
-    k           = float(smr["K"])
-    entry_threshold = -k
-
-    # Compute live z-scores across all tickers
     rows = []
     for p in sorted(DATA_DIR.glob("*_daily_high_low.csv")):
         ticker = p.stem.replace("_daily_high_low", "")
         try:
             df    = pd.read_csv(p, parse_dates=["Date"]).sort_values("Date").reset_index(drop=True)
             close = df["Close"].astype(float)
-            if close.isna().all():
+            if len(close) < max(n1, n2, n3) + 1 or close.isna().all():
                 continue
             zs, valid = [], True
             for n in [n1, n2, n3]:
@@ -105,28 +110,77 @@ def load_signal() -> tuple[str, str, float]:
             continue
 
     if not rows:
-        print("[alpaca] No valid z-scores computed — signal FLAT.")
-        return "FLAT", "", 0.0
+        print("[alpaca] No valid z-scores computed.")
+        return "", 0.0
 
     df_z = pd.DataFrame(rows).sort_values("Composite Z").reset_index(drop=True)
     top  = df_z.iloc[0]
-    top_ticker = str(top["Ticker"])
-    top_z      = float(top["Composite Z"])
-    top_price  = float(top["Close"])
 
-    print(f"[alpaca] Live z-scores  : {len(df_z)} tickers ranked")
-    print(f"[alpaca] Top candidate  : {top_ticker}  Z={top_z:.3f}  "
-          f"(threshold={entry_threshold:.2f})")
+    print(f"[alpaca] Universe       : {len(df_z)} tickers ranked")
+    print(f"[alpaca] Top candidate  : {top['Ticker']}  "
+          f"Z={top['Composite Z']:.3f}  (threshold={threshold:.2f})")
 
-    if top_z <= entry_threshold:
-        return "HOLDING", top_ticker, top_price
-    else:
-        return "FLAT", "", 0.0
+    if top["Composite Z"] <= threshold:
+        return str(top["Ticker"]), float(top["Close"])
+    return "", 0.0
 
+
+# ── Exit signal (when holding) ────────────────────────────────────────────────
+
+def compute_exit_signal(ticker: str, entry_price: float, params: dict) -> tuple[bool, str]:
+    """
+    Mirrors the backtester's CS exit logic exactly.
+    Returns (should_exit, reason).
+
+    Take profit : today's close crosses ABOVE the upper BB on ANY of N1/N2/N3
+                  (i.e. yesterday ≤ upper, today > upper)
+    Stop loss   : today's close ≤ entry_price × (1 − stop_pct)
+    """
+    n1, n2, n3   = params["n1"], params["n2"], params["n3"]
+    k            = params["k"]
+    stop_pct     = params["stop_pct"]
+
+    path = DATA_DIR / f"{ticker}_daily_high_low.csv"
+    if not path.exists():
+        print(f"[alpaca] Data file missing for {ticker} — cannot evaluate exit.")
+        return False, ""
+
+    try:
+        df    = pd.read_csv(path, parse_dates=["Date"]).sort_values("Date").reset_index(drop=True)
+        close = df["Close"].astype(float)
+        if len(close) < 2:
+            return False, ""
+
+        c   = float(close.iloc[-1])   # today's close
+        c_p = float(close.iloc[-2])   # yesterday's close
+
+        # Stop loss
+        stop_level = entry_price * (1.0 - stop_pct)
+        if c <= stop_level:
+            return True, f"stop loss (close ${c:.2f} ≤ stop ${stop_level:.2f})"
+
+        # Take profit: crossover on any of the 3 upper bands
+        for n in [n1, n2, n3]:
+            sma   = close.rolling(n).mean()
+            std   = close.rolling(n).std()
+            upper = (sma + k * std)
+            if pd.isna(upper.iloc[-1]) or pd.isna(upper.iloc[-2]):
+                continue
+            if c > float(upper.iloc[-1]) and c_p <= float(upper.iloc[-2]):
+                return True, f"take profit (crossed upper BB N={n}, upper=${upper.iloc[-1]:.2f})"
+
+        return False, ""
+
+    except Exception as e:
+        print(f"[alpaca] Exit signal error for {ticker}: {e}")
+        return False, ""
+
+
+# ── Alpaca client helpers ─────────────────────────────────────────────────────
 
 def get_client():
     if not API_KEY or not SECRET_KEY:
-        print(f"[alpaca] Skipping — ALPACA_API_KEY / ALPACA_SECRET_KEY not set.")
+        print("[alpaca] Skipping — ALPACA_API_KEY / ALPACA_SECRET_KEY not set.")
         return None
     try:
         from alpaca.trading.client import TradingClient
@@ -139,11 +193,17 @@ def get_client():
         return None
 
 
-def get_positions(client) -> dict[str, float]:
-    """Returns {ticker: qty} for all open positions."""
+def get_positions(client) -> dict[str, dict]:
+    """Returns {ticker: {qty, avg_entry_price}} for all open positions."""
     try:
         positions = client.get_all_positions()
-        return {p.symbol: float(p.qty) for p in positions}
+        return {
+            p.symbol: {
+                "qty":             float(p.qty),
+                "avg_entry_price": float(p.avg_entry_price),
+            }
+            for p in positions
+        }
     except Exception as e:
         print(f"[alpaca] Could not fetch positions: {e}")
         return {}
@@ -151,19 +211,15 @@ def get_positions(client) -> dict[str, float]:
 
 def get_portfolio_value(client) -> float:
     try:
-        account = client.get_account()
-        return float(account.portfolio_value)
+        return float(client.get_account().portfolio_value)
     except Exception as e:
         print(f"[alpaca] Could not fetch account: {e}")
         return 0.0
 
 
 def place_buy(client, ticker: str):
-    """Buy $BUY_NOTIONAL of ticker (market order, next open)."""
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
-
-    # Use notional (dollar amount) so we get fractional shares if needed
     order = MarketOrderRequest(
         symbol=ticker,
         notional=BUY_NOTIONAL,
@@ -174,10 +230,8 @@ def place_buy(client, ticker: str):
 
 
 def place_sell(client, ticker: str, qty: float):
-    """Sell entire position in ticker (market order, next open)."""
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
-
     order = MarketOrderRequest(
         symbol=ticker,
         qty=qty,
@@ -196,42 +250,43 @@ def main():
     print(f"[alpaca] Date: {today}")
     print(f"{'='*60}")
 
-    # ── Load model signal ─────────────────────────────────────────────────────
-    state, signal_ticker, last_price = load_signal()
-    print(f"[alpaca] Model signal : {state}"
-          + (f" {signal_ticker} @ ${last_price:.2f}" if signal_ticker else ""))
+    # ── Load model parameters ─────────────────────────────────────────────────
+    params = load_params()
+    if params is None:
+        return
+    print(f"[alpaca] Model params   : N={params['n1']}/{params['n2']}/{params['n3']}  "
+          f"K={params['k']}  Stop={params['stop_pct']:.0%}")
 
     # ── Connect to Alpaca ─────────────────────────────────────────────────────
     client = get_client()
     if client is None:
         return
 
-    positions      = get_positions(client)
+    positions       = get_positions(client)
     portfolio_value = get_portfolio_value(client)
-    held_tickers   = list(positions.keys())
+    held_tickers    = list(positions.keys())
 
-    print(f"[alpaca] Portfolio    : ${portfolio_value:,.2f}")
-    print(f"[alpaca] Positions    : {held_tickers if held_tickers else 'none'}")
+    print(f"[alpaca] Portfolio      : ${portfolio_value:,.2f}")
+    print(f"[alpaca] Positions      : {held_tickers if held_tickers else 'none'}")
 
-    # ── Reconcile ─────────────────────────────────────────────────────────────
-    actions = []
+    # ── Single-position rule: warn if somehow holding more than one ───────────
+    if len(positions) > 1:
+        print(f"[alpaca] WARNING: {len(positions)} positions found — model is single-position only.")
 
-    # Close any position the model no longer wants
-    for held in held_tickers:
-        if state == "FLAT" or (state == "HOLDING" and held != signal_ticker):
-            actions.append(("SELL", held, positions[held]))
+    # ── HOLDING: check backtester exit conditions ─────────────────────────────
+    if positions:
+        ticker      = held_tickers[0]
+        entry_price = positions[ticker]["avg_entry_price"]
+        qty         = positions[ticker]["qty"]
+        stop_level  = entry_price * (1.0 - params["stop_pct"])
 
-    # Open a position if the model says HOLDING and we don't have it yet
-    if state == "HOLDING" and signal_ticker and signal_ticker not in positions:
-        actions.append(("BUY", signal_ticker, None))
+        print(f"[alpaca] Holding        : {ticker}  entry=${entry_price:.2f}  "
+              f"stop=${stop_level:.2f}  qty={qty:.4f}")
 
-    if not actions:
-        print(f"[alpaca] No action needed — portfolio already matches model signal.")
-        return
+        should_exit, reason = compute_exit_signal(ticker, entry_price, params)
 
-    # ── Execute (or log) ──────────────────────────────────────────────────────
-    for action, ticker, qty in actions:
-        if action == "SELL":
+        if should_exit:
+            print(f"[alpaca] EXIT SIGNAL    : {reason}")
             print(f"[alpaca] {MODE} → SELL {qty:.4f} shares of {ticker}")
             if TRADING_ENABLED:
                 try:
@@ -239,16 +294,25 @@ def main():
                     print(f"[alpaca]   Order submitted: {order.id} | status: {order.status}")
                 except Exception as e:
                     print(f"[alpaca]   SELL failed: {e}")
+        else:
+            print(f"[alpaca] Holding {ticker} — no exit conditions met.")
 
-        elif action == "BUY":
-            print(f"[alpaca] {MODE} → BUY  ${BUY_NOTIONAL:,.2f} of {ticker}"
-                  + (f" (~{BUY_NOTIONAL / last_price:.1f} shares @ ${last_price:.2f})" if last_price else ""))
+    # ── FLAT: check entry conditions ──────────────────────────────────────────
+    else:
+        signal_ticker, last_price = compute_entry_signal(params)
+
+        if signal_ticker:
+            print(f"[alpaca] ENTRY SIGNAL   : BUY {signal_ticker} @ ${last_price:.2f}")
+            print(f"[alpaca] {MODE} → BUY  ${BUY_NOTIONAL:,.2f} of {signal_ticker}"
+                  f" (~{BUY_NOTIONAL / last_price:.1f} shares)")
             if TRADING_ENABLED:
                 try:
-                    order = place_buy(client, ticker)
+                    order = place_buy(client, signal_ticker)
                     print(f"[alpaca]   Order submitted: {order.id} | status: {order.status}")
                 except Exception as e:
                     print(f"[alpaca]   BUY failed: {e}")
+        else:
+            print(f"[alpaca] FLAT — no ticker below entry threshold. No action.")
 
     if not TRADING_ENABLED:
         print(f"\n[alpaca] DRY RUN complete — no orders placed.")
