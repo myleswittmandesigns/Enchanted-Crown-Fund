@@ -2,10 +2,17 @@
 """
 alpaca_trader.py
 ----------------
-Reads today's cross-sectional signal and reconciles it against the
-current Alpaca paper-trading portfolio.
+Computes today's live cross-sectional signal (same logic as the Daily Signal
+tab) and reconciles it against the current Alpaca paper-trading portfolio.
 
-Runs as the final step of update_data.yml, after the email is sent.
+Signal logic:
+  - Load N1/N2/N3/K from the latest cs_summary file
+  - Rank all tickers by composite z-score across all three windows
+  - If the top-ranked ticker's composite Z ≤ -K  →  HOLDING (buy signal)
+  - Otherwise                                    →  FLAT (no position)
+
+This means the trader acts on TODAY's real-time ranking, not the backtester's
+historical in-sample portfolio state.
 
 Required GitHub Actions secrets:
   ALPACA_API_KEY      Paper trading API key ID
@@ -15,7 +22,7 @@ Trading is DISABLED by default. To enable paper trading, add a secret:
   TRADING_ENABLED = true
 
 When disabled the script logs exactly what it WOULD do — useful for
-shadow-trading a week or two before going live.
+shadow-trading before going live.
 """
 
 import os
@@ -23,6 +30,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -41,7 +49,7 @@ BUY_NOTIONAL = 10_000.00  # Fixed dollar amount per trade
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _latest(pattern: str) -> pd.DataFrame | None:
+def _latest_csv(pattern: str) -> pd.DataFrame | None:
     files = sorted(REPORTS_DIR.glob(pattern), reverse=True)
     if not files:
         return None
@@ -52,15 +60,68 @@ def _latest(pattern: str) -> pd.DataFrame | None:
 
 
 def load_signal() -> tuple[str, str, float]:
-    """Returns (state, ticker, last_price). State = HOLDING | FLAT."""
-    df = _latest("cs_signal_*.csv")
-    if df is None or df.empty:
+    """
+    Computes today's live signal by ranking all tickers on composite z-score.
+    Returns (state, ticker, last_price).  state = HOLDING | FLAT.
+
+    HOLDING means the top-ranked ticker is below the entry threshold (-K),
+    i.e. the same condition the Daily Signal tab uses to show a buy candidate.
+    """
+    # Load model parameters from latest summary
+    smr_df = _latest_csv("cs_summary_*.csv")
+    if smr_df is None or smr_df.empty:
+        print("[alpaca] No cs_summary file found — cannot compute live signal.")
         return "FLAT", "", 0.0
-    row = df.iloc[0]
-    state  = str(row.get("State", "FLAT")).upper()
-    ticker = str(row.get("Ticker", ""))
-    price  = float(row.get("Last $", 0.0))
-    return state, ticker, price
+
+    smr = smr_df.iloc[0]
+    n1, n2, n3 = int(smr["N1"]), int(smr["N2"]), int(smr["N3"])
+    k           = float(smr["K"])
+    entry_threshold = -k
+
+    # Compute live z-scores across all tickers
+    rows = []
+    for p in sorted(DATA_DIR.glob("*_daily_high_low.csv")):
+        ticker = p.stem.replace("_daily_high_low", "")
+        try:
+            df    = pd.read_csv(p, parse_dates=["Date"]).sort_values("Date").reset_index(drop=True)
+            close = df["Close"].astype(float)
+            if close.isna().all():
+                continue
+            zs, valid = [], True
+            for n in [n1, n2, n3]:
+                sma = close.rolling(n).mean()
+                std = close.rolling(n).std()
+                if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]) or std.iloc[-1] < 1e-9:
+                    valid = False; break
+                zs.append(float((close.iloc[-1] - sma.iloc[-1]) / std.iloc[-1]))
+            if not valid:
+                continue
+            rows.append({
+                "Ticker":      ticker,
+                "Close":       float(close.iloc[-1]),
+                "Composite Z": float(np.mean(zs)),
+            })
+        except Exception:
+            continue
+
+    if not rows:
+        print("[alpaca] No valid z-scores computed — signal FLAT.")
+        return "FLAT", "", 0.0
+
+    df_z = pd.DataFrame(rows).sort_values("Composite Z").reset_index(drop=True)
+    top  = df_z.iloc[0]
+    top_ticker = str(top["Ticker"])
+    top_z      = float(top["Composite Z"])
+    top_price  = float(top["Close"])
+
+    print(f"[alpaca] Live z-scores  : {len(df_z)} tickers ranked")
+    print(f"[alpaca] Top candidate  : {top_ticker}  Z={top_z:.3f}  "
+          f"(threshold={entry_threshold:.2f})")
+
+    if top_z <= entry_threshold:
+        return "HOLDING", top_ticker, top_price
+    else:
+        return "FLAT", "", 0.0
 
 
 def get_client():
