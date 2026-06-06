@@ -9,52 +9,179 @@ from pathlib import Path
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Enchanted Crown Fund",
-    page_icon="👑",
+    page_icon="ECF",
     layout="centered",
 )
 
 st.markdown("""
 <style>
-/* ── Base styles ──────────────────────────────────────────────────────────── */
+/* ── Professional fintech theme ──────────────────────────────────────────── */
+
+/* Import Inter font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; }
+
+/* Main container */
 .block-container {
-    padding: 1rem 1rem 2rem 1rem !important;
+    padding: 1.25rem 1.5rem 2rem 1.5rem !important;
     max-width: 100% !important;
 }
-.stDateInput { font-size: 1rem !important; }
-[data-testid="metric-container"] {
-    background: #f8f9fa;
-    border-radius: 10px;
-    padding: 0.6rem 0.8rem;
-    margin-bottom: 0.5rem;
-}
-h1 { font-size: 1.6rem !important; }
-h2 { font-size: 1.1rem !important; }
-.streamlit-expanderHeader { font-size: 1rem !important; padding: 0.75rem !important; }
 
-/* ── Tabs — horizontally scrollable, no wrapping ──────────────────────────── */
+/* Title */
+h1 {
+    font-size: 1.4rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.02em !important;
+    color: #0f172a !important;
+}
+h2 { font-size: 1.05rem !important; font-weight: 600 !important; color: #1e293b !important; }
+h3 { font-size: 0.92rem !important; font-weight: 600 !important; color: #334155 !important; letter-spacing: 0.03em !important; text-transform: uppercase !important; }
+
+/* Subheader */
+[data-testid="stSubheader"] { color: #64748b !important; font-size: 0.85rem !important; font-weight: 400 !important; }
+
+/* Metric cards — clean fintech style */
+[data-testid="metric-container"] {
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 6px !important;
+    padding: 0.65rem 0.85rem !important;
+    margin-bottom: 0.5rem !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.67rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    color: #64748b !important;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.1rem !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    letter-spacing: -0.01em !important;
+}
+[data-testid="stMetricDelta"] {
+    font-size: 0.72rem !important;
+    font-weight: 500 !important;
+}
+
+/* Tabs — clean underline style */
 .stTabs [data-baseweb="tab-list"] {
+    gap: 0 !important;
+    border-bottom: 2px solid #e2e8f0 !important;
+    background: transparent !important;
     overflow-x: auto !important;
     overflow-y: hidden !important;
     -webkit-overflow-scrolling: touch !important;
     flex-wrap: nowrap !important;
     scrollbar-width: none !important;
-    gap: 2px !important;
 }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none !important; }
+.stTabs [data-baseweb="tab"] {
+    font-size: 0.78rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.02em !important;
+    text-transform: uppercase !important;
+    color: #64748b !important;
+    border: none !important;
+    border-bottom: 2px solid transparent !important;
+    margin-bottom: -2px !important;
+    padding: 0.6rem 1rem !important;
+    background: transparent !important;
+    white-space: nowrap !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #0f172a !important;
+    border-bottom: 2px solid #0f172a !important;
+    font-weight: 600 !important;
+}
+
+/* Expanders */
+.streamlit-expanderHeader {
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.04em !important;
+    color: #475569 !important;
+    padding: 0.6rem 0.75rem !important;
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 4px !important;
+}
+
+/* Dividers */
+hr { border-color: #e2e8f0 !important; margin: 1rem 0 !important; }
+
+/* Captions */
+.stCaption, [data-testid="stCaptionContainer"] {
+    font-size: 0.72rem !important;
+    color: #94a3b8 !important;
+    line-height: 1.5 !important;
+}
+
+/* Info/warning boxes — cleaner */
+[data-testid="stInfo"] {
+    background: #f0f9ff !important;
+    border-left: 3px solid #0ea5e9 !important;
+    border-radius: 0 4px 4px 0 !important;
+    font-size: 0.82rem !important;
+}
+[data-testid="stWarning"] {
+    background: #fffbeb !important;
+    border-left: 3px solid #f59e0b !important;
+    border-radius: 0 4px 4px 0 !important;
+    font-size: 0.82rem !important;
+}
+
+/* Buttons */
+.stButton button {
+    font-size: 0.78rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.02em !important;
+    text-transform: uppercase !important;
+    border-radius: 4px !important;
+    padding: 0.35rem 0.75rem !important;
+    border: 1px solid #cbd5e1 !important;
+    background: #f8fafc !important;
+    color: #334155 !important;
+}
+.stButton button:hover {
+    background: #f1f5f9 !important;
+    border-color: #94a3b8 !important;
+}
+
+/* Dataframes */
+[data-testid="stDataFrame"] {
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 6px !important;
+    overflow: hidden !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+
+/* Number input */
+[data-testid="stNumberInput"] input {
+    font-size: 0.85rem !important;
+    border-radius: 4px !important;
+}
+
+/* Selectbox */
+[data-testid="stSelectbox"] { font-size: 0.85rem !important; }
+
+/* Radio */
+[data-testid="stRadio"] label { font-size: 0.82rem !important; }
 
 /* ── Mobile — portrait phones (≤ 768 px) ─────────────────────────────────── */
 @media screen and (max-width: 768px) {
+    .block-container { padding: 0.75rem 0.75rem 1.25rem !important; }
 
-    .block-container { padding: 0.5rem 0.5rem 1rem !important; }
-
-    /* Tabs — smaller text, tight padding */
     .stTabs [data-baseweb="tab"] {
         font-size: 0.68rem !important;
-        padding: 6px 7px !important;
-        white-space: nowrap !important;
+        padding: 0.5rem 0.6rem !important;
     }
 
-    /* All column rows wrap at 2-per-row */
     .stHorizontalBlock {
         flex-wrap: wrap !important;
         gap: 0.4rem 0.5rem !important;
@@ -65,76 +192,35 @@ h2 { font-size: 1.1rem !important; }
         box-sizing: border-box !important;
     }
 
-    /* Metric cards — tighter, smaller text */
-    [data-testid="metric-container"] {
-        padding: 0.35rem 0.45rem !important;
-        margin-bottom: 0.3rem !important;
-    }
-    [data-testid="stMetricValue"] {
-        font-size: 0.95rem !important;
-        line-height: 1.2 !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 0.65rem !important;
-    }
+    [data-testid="metric-container"] { padding: 0.4rem 0.5rem !important; margin-bottom: 0.3rem !important; }
+    [data-testid="stMetricValue"] { font-size: 0.9rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.6rem !important; }
     [data-testid="stMetricDelta"] svg { display: none !important; }
 
-    /* Headings */
-    h1 { font-size: 1.2rem !important; }
-    h2 { font-size: 0.95rem !important; }
-    h3 { font-size: 0.9rem !important; }
+    h1 { font-size: 1.1rem !important; }
+    h2 { font-size: 0.9rem !important; }
+    h3 { font-size: 0.8rem !important; }
 
-    /* Dataframes — horizontal scroll, don't blow out page width */
-    [data-testid="stDataFrame"] {
-        overflow-x: auto !important;
-        -webkit-overflow-scrolling: touch !important;
-        max-width: 100vw !important;
-    }
-    [data-testid="stDataFrame"] iframe {
-        max-width: 100% !important;
-    }
-
-    /* Plotly charts — prevent overflow */
-    [data-testid="stPlotlyChart"] {
-        overflow-x: auto !important;
-        max-width: 100vw !important;
-    }
-
-    /* Number inputs — full width */
+    [data-testid="stPlotlyChart"] { overflow-x: auto !important; max-width: 100vw !important; }
     [data-testid="stNumberInput"] { width: 100% !important; }
-
-    /* Expander header padding */
-    .streamlit-expanderHeader { padding: 0.5rem 0.75rem !important; font-size: 0.85rem !important; }
-
-    /* Caption / small text */
-    .stCaption, [data-testid="stCaptionContainer"] { font-size: 0.7rem !important; }
-
-    /* Buttons in nav (← Prev / Next →) */
-    .stButton button {
-        font-size: 0.8rem !important;
-        padding: 0.3rem 0.5rem !important;
-    }
+    .stCaption, [data-testid="stCaptionContainer"] { font-size: 0.68rem !important; }
+    .stButton button { font-size: 0.72rem !important; padding: 0.3rem 0.5rem !important; }
 }
 
-/* ── Very small phones (≤ 420 px) ─────────────────────────────────────────── */
 @media screen and (max-width: 420px) {
-    .stTabs [data-baseweb="tab"] {
-        font-size: 0.6rem !important;
-        padding: 5px 5px !important;
-    }
-    [data-testid="stMetricValue"] { font-size: 0.85rem !important; }
-    [data-testid="stMetricLabel"] { font-size: 0.6rem !important; }
+    .stTabs [data-baseweb="tab"] { font-size: 0.6rem !important; padding: 0.4rem 0.45rem !important; }
+    [data-testid="stMetricValue"] { font-size: 0.82rem !important; }
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("👑 Enchanted Crown Fund")
+st.title("Enchanted Crown Fund")
 st.subheader("Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
 tab_daily, tab_viz, tab_bt, tab_ml, tab_cs, tab_rs, tab_rules = st.tabs([
-    "📅 Signal", "📈 Bollinger", "⚙️ Backtest", "📊 Multi-LB",
-    "🎯 Cross-Sec", "🔬 Resp Surface", "📋 Rules"
+    "Signal", "Bollinger", "Backtest", "Multi-LB",
+    "Cross-Sec", "Resp Surface", "Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
@@ -218,7 +304,7 @@ with tab_daily:
         # ── Header ────────────────────────────────────────────────────────────
         from datetime import date as _date
         today_str = _date.today().strftime("%B %d, %Y")
-        st.markdown(f"## 📅 Daily Signal — {today_str}")
+        st.markdown(f"## Daily Signal — {today_str}")
         st.caption(
             f"Cross-sectional model · Windows N = {n1_cs}, {n2_cs}, {n3_cs} · "
             f"K = {k_cs} · Entry: lowest composite z-score across all windows"
@@ -237,12 +323,11 @@ with tab_daily:
             entry_price  = sig.get("Entry $",    0.0)
             last_price   = sig.get("Last $",     0.0)
             unreal_pct   = sig.get("Unrealized %", 0.0)
-            color_badge  = "🟡" if float(unreal_pct) >= 0 else "🔴"
             cur_rank_row = df_z[df_z["Ticker"] == ticker]
             cur_rank     = int(cur_rank_row["Rank"].iloc[0]) if not cur_rank_row.empty else "?"
             cur_z        = float(cur_rank_row["Composite Z"].iloc[0]) if not cur_rank_row.empty else float("nan")
 
-            st.markdown(f"### {color_badge} Current Position")
+            st.markdown("### Current Position")
             p1, p2, p3, p4, p5 = st.columns(5)
             p1.metric("Ticker",          ticker)
             p2.metric("Entry Date",      entry_date)
@@ -259,13 +344,13 @@ with tab_daily:
                 "a lower-ranked ticker today does **not** trigger a switch."
             )
         else:
-            st.markdown("### ⚪ No Current Position")
+            st.markdown("### No Current Position")
             st.info("The model is flat. If the top-ranked ticker is below the entry threshold, a buy signal is active.")
 
         st.divider()
 
         # ── Today's top candidate ─────────────────────────────────────────────
-        st.markdown("### 🎯 Today's Top Buy Candidate")
+        st.markdown("### Top Buy Candidate")
 
         top = df_z.iloc[0]
         top_ticker = top["Ticker"]
@@ -276,17 +361,22 @@ with tab_daily:
         entry_threshold = -k_cs
 
         if top_z <= entry_threshold:
-            signal_label = "🚨 ACTIVE BUY SIGNAL"
-            signal_color = "#d62728"
+            signal_label = "ACTIVE BUY SIGNAL"
         elif top_z <= entry_threshold * 0.7:
-            signal_label = "⚠️ APPROACHING ENTRY"
-            signal_color = "#ff7f0e"
+            signal_label = "APPROACHING ENTRY"
         else:
-            signal_label = "👀 WATCHING — not yet at entry threshold"
-            signal_color = "#7f7f7f"
+            signal_label = "WATCHING — below entry threshold"
 
+        badge_styles = {
+            "ACTIVE BUY SIGNAL":            ("background:#fef2f2;color:#b91c1c;border:1px solid #fca5a5;",),
+            "APPROACHING ENTRY":     ("background:#fffbeb;color:#b45309;border:1px solid #fcd34d;",),
+            "WATCHING — below entry threshold": ("background:#f8fafc;color:#475569;border:1px solid #cbd5e1;",),
+        }
+        _bs = badge_styles.get(signal_label, ("background:#f8fafc;color:#475569;border:1px solid #cbd5e1;",))[0]
         st.markdown(
-            f"<h4 style='color:{signal_color}'>{signal_label}</h4>",
+            f"<div style='display:inline-block;{_bs}padding:4px 12px;border-radius:4px;"
+            f"font-size:0.72rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;"
+            f"margin-bottom:0.75rem;'>{signal_label}</div>",
             unsafe_allow_html=True,
         )
 
@@ -317,7 +407,7 @@ with tab_daily:
         st.divider()
 
         # ── Full ranking chart ─────────────────────────────────────────────────
-        st.markdown("### 📊 Full Universe Ranking — Today")
+        st.markdown("### Universe Ranking")
         st.caption(
             "Lower composite z-score = more oversold. "
             f"Entry threshold = {entry_threshold:.2f} (K = {k_cs}). "
@@ -341,7 +431,7 @@ with tab_daily:
         for _, row in df_z.iterrows():
             t = row["Ticker"]
             if state == "HOLDING" and t == ticker:
-                bar_labels.append(f"{t} ◀ holding")
+                bar_labels.append(f"{t}  [held]")
             else:
                 bar_labels.append(t)
 
@@ -380,7 +470,7 @@ with tab_daily:
 
         # ── Recent trade history ──────────────────────────────────────────────
         if trd_df is not None and not trd_df.empty:
-            st.markdown("### 📋 Recent Trade History")
+            st.markdown("### Recent Trades")
             recent = trd_df.tail(10).iloc[::-1].reset_index(drop=True)
             recent.index += 1
             st.dataframe(recent, use_container_width=True)
@@ -468,7 +558,7 @@ with tab_viz:
                         "Entry $":     round(entry_price, 2),
                         "Exit Date":   date.strftime("%Y-%m-%d"),
                         "Exit $":      round(close, 2),
-                        "Exit Reason": "Take Profit ✅" if tp else "Stop Loss 🛑",
+                        "Exit Reason": "Take Profit" if tp else "Stop Loss",
                         "Return %":    round((close / entry_price - 1) * 100, 1),
                         "Balance $":   round(balance, 2),
                     })
@@ -486,7 +576,7 @@ with tab_viz:
                 "Entry $":     round(entry_price, 2),
                 "Exit Date":   "—",
                 "Exit $":      round(close, 2),
-                "Exit Reason": "Still Open 🟡",
+                "Exit Reason": "Open",
                 "Return %":    round((close / entry_price - 1) * 100, 1),
                 "Balance $":   round(balance, 2),
             })
@@ -511,14 +601,14 @@ with tab_viz:
     global_max = df_full["Date"].max().date()
 
     # ── Active strategy parameters (read-only display) ────────────────────────
-    with st.expander("📋 Active Strategy Parameters", expanded=False):
+    with st.expander("Active Strategy Parameters", expanded=False):
         st.caption("Parameters are defined in `STRATEGY_RULES.md` and cannot be changed here.")
         c1, c2 = st.columns(2)
         c1.metric("N (Lookback)", N)
         c2.metric("K (Std Dev ×)", K)
 
     # ── Date range + signal toggle ─────────────────────────────────────────────
-    with st.expander("⚙️ View Settings", expanded=False):
+    with st.expander("View Settings", expanded=False):
         col_a, col_b = st.columns(2)
         with col_a:
             start_date = st.date_input("From", value=global_min, min_value=global_min, max_value=global_max)
@@ -620,7 +710,7 @@ with tab_viz:
 
     # ── Signal Navigator ───────────────────────────────────────────────────────
     st.divider()
-    st.markdown("### 🔍 Signal Navigator")
+    st.markdown("### Signal Navigator")
 
     _all_signals = []
     for _d, _p in zip(df["Date"][buy_signals], df["Close"][buy_signals]):
@@ -719,7 +809,7 @@ with tab_viz:
                 if _oc and _oc.get("Exit Date") and _oc["Exit Date"] != "—":
                     _exit_dt  = pd.to_datetime(_oc["Exit Date"])
                     _exit_px  = _oc["Exit $"]
-                    _is_tp    = _oc["Exit Reason"] == "Take Profit ✅"
+                    _is_tp    = _oc["Exit Reason"] == "Take Profit"
                     _ex_color = "rgba(0,160,0,0.45)" if _is_tp else "rgba(200,0,0,0.45)"
                     _fn.add_vline(x=_exit_dt, line_dash="dot",
                                   line_color=_ex_color, line_width=1.5)
@@ -754,7 +844,7 @@ with tab_viz:
                 _i4.metric("Exit Price",        f"${_oc['Exit $']:.2f}"      if _oc else "—")
                 _i5.metric("Return",            f"{_oc['Return %']:+.1f}%"   if _oc else "—",
                            delta=f"{_oc['Exit Reason']}" if _oc else None,
-                           delta_color="normal" if _oc and "✅" in _oc.get("Exit Reason","") else "inverse")
+                           delta_color="normal" if _oc and _oc.get("Exit Reason","") == "Take Profit" else "inverse")
             else:
                 _i1, _i2 = st.columns(2)
                 _i1.metric("Signal Price", f"${_sig['price']:.2f}")
@@ -778,7 +868,7 @@ with tab_viz:
 
     # ── Portfolio simulation ───────────────────────────────────────────────────
     st.divider()
-    st.markdown("### 💰 Portfolio Simulation")
+    st.markdown("### Portfolio Simulation")
     st.caption(f"Buys on BB lower crossover · Exits at SMA (take profit) or −{int(STOP_PCT*100)}% (stop loss) · Full balance reinvested each trade")
 
     initial_investment = st.number_input(
@@ -792,7 +882,7 @@ with tab_viz:
         st.info("No completed trades in the selected date range.")
     else:
         total_return_pct = (final_balance / initial_investment - 1) * 100
-        closed = [t for t in trades if t["Exit Reason"] != "Still Open 🟡"]
+        closed = [t for t in trades if t["Exit Reason"] != "Open"]
         wins   = [t for t in closed if t["Return %"] > 0]
 
         # Max drawdown from daily equity curve
@@ -2206,17 +2296,17 @@ with tab_cs:
             state = str(sg["State"]).upper()
             if state == "HOLDING":
                 st.success(
-                    f"📌 **HOLDING {sg['Ticker']}** — entered {sg['Entry Date']} @ "
+                    f"**HOLDING {sg['Ticker']}** — entered {sg['Entry Date']} @ "
                     f"${sg['Entry $']:.2f}, last ${sg['Last $']:.2f} "
                     f"(**{sg['Unrealized %']:+.2f}%** unrealized). Hold until exit; ignore new signals."
                 )
             elif state in ("BUY", "ENTER"):
                 st.warning(
-                    f"🟢 **BUY {sg['Ticker']}** — biggest loser of the day. "
+                    f"**BUY SIGNAL — {sg['Ticker']}** — biggest loser of the day. "
                     f"Last ${sg['Last $']:.2f}. This would trigger the buy alert."
                 )
             else:
-                st.info("💤 **CASH** — no candidate fired the 3-BB consensus today.")
+                st.info("**CASH** — no candidate fired the 3-BB consensus today.")
 
         # True peak-to-trough drawdown from the daily equity curve (conventional
         # definition: each trough vs its own prior peak). The engine's CSV "Max DD %"
@@ -2242,13 +2332,13 @@ with tab_cs:
         m6.metric("WF Profitable", f"{srow['WF Profitable']}")
 
         st.caption(
-            "⚠️ Schedule below uses the **full-period best-fit** params. Walk-forward "
+            "Note: Schedule below uses the **full-period best-fit** params. Walk-forward "
             f"held up in only {srow['WF Profitable']} windows — treat as in-sample history, "
             "not an out-of-sample track record."
         )
 
         sub_sched, sub_eq, sub_wf, sub_rs = st.tabs([
-            "📅 Schedule", "📈 Equity Curve", "🔬 Walk-Forward", "🎛 Response Surface"
+            "Schedule", "Equity Curve", "Walk-Forward", "Response Surface"
         ])
 
         # ── 📅 SCHEDULE — the buy / hold / close timeline ─────────────────────────
@@ -2343,7 +2433,7 @@ with tab_cs:
 
                 csv_bytes = disp.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    "⬇️ Download schedule (CSV)", csv_bytes,
+                    "Download schedule (CSV)", csv_bytes,
                     file_name=f"investment_schedule_{run_date}.csv",
                     mime="text/csv",
                 )
@@ -2539,14 +2629,14 @@ with tab_rs:
             return float(np.abs(np.diff(y)).sum() / rng) if rng > 1e-9 else 0.0
 
         def _badge(ntv):
-            if np.isnan(ntv):  return "❓ N/A"
-            if ntv < 0.001:    return "➖ Flat — parameter has negligible effect"
-            if ntv < 2.5:      return "🟢 Smooth — well-generalized"
-            if ntv < 5.0:      return "🟡 Moderate — some roughness, watch carefully"
-            return "🔴 Spiky — overfit risk, may be chasing a lucky event"
+            if np.isnan(ntv):  return "N/A"
+            if ntv < 0.001:    return "FLAT — negligible effect"
+            if ntv < 2.5:      return "SMOOTH — well-generalized"
+            if ntv < 5.0:      return "MODERATE — some roughness"
+            return "SPIKY — overfit risk"
 
         # ── Header ────────────────────────────────────────────────────────────
-        st.markdown("## 🔬 Response Surface Analysis")
+        st.markdown("## Response Surface Analysis")
         st.caption(
             '**The radio-knob test** (from the gold standard): hold all parameters fixed at their '
             'optimal values and slowly vary one. **Smooth output = generalized.** '
@@ -2574,11 +2664,11 @@ with tab_rs:
         st.divider()
 
         # ══ Section 1: 1D Slices ══════════════════════════════════════════════
-        st.markdown("### 📻 1D Slices — Radio Knob Test")
+        st.markdown("### 1D Parameter Slices — Radio Knob Test")
         st.caption(
             "**Blue solid + band** = marginal median ± IQR (averaged across all other param values — most robust view).  "
             "**Red dashed** = slice through the optimum (other 3 params pinned to best values).  "
-            "**★** = optimal value."
+            "**●** = optimal value."
         )
 
         diag_rows = []
@@ -2665,7 +2755,7 @@ with tab_rs:
                     mode="markers",
                     marker=dict(symbol="star", size=18, color="#FFD700",
                                 line=dict(color="#333", width=1)),
-                    name="Optimal ★",
+                    name="Optimal",
                 ))
 
             fig1d.update_layout(
@@ -2687,7 +2777,7 @@ with tab_rs:
         st.divider()
 
         # ══ Section 2: Smoothness diagnostics table ════════════════════════════
-        st.markdown("### 📋 Parameter Diagnostics")
+        st.markdown("### Parameter Diagnostics")
         st.caption(
             "**NTV** (Normalized Total Variation) of the marginal median curve. "
             "~1 = smooth/monotone — safe. >2.5 = moderate roughness. >5 = overfit risk."
@@ -2697,7 +2787,7 @@ with tab_rs:
         st.divider()
 
         # ══ Section 3: 2D Heatmap ══════════════════════════════════════════════
-        st.markdown("### 🗺️ 2D Response Surface Heatmap")
+        st.markdown("### 2D Response Surface Heatmap")
         st.caption(
             "Vary two parameters simultaneously; remaining two are pinned to optimal. "
             "A smooth, broad plateau = robust. A sharp spike = fragile / overfit."
@@ -2760,7 +2850,7 @@ with tab_rs:
                     mode="markers+text",
                     marker=dict(symbol="star", size=20, color="#FFD700",
                                 line=dict(color="#333", width=1.5)),
-                    text=["★ best"],
+                    text=["● best"],
                     textposition="top center",
                     textfont=dict(size=11, color="#333"),
                     name="Optimal",
@@ -2806,7 +2896,7 @@ with tab_rules:
             v = m.group(1)
             return f"**{v}%**" if pct else f"**{v}**"
 
-        st.markdown("## 📊 Bollinger Band Strategy")
+        st.markdown("## Bollinger Band Strategy")
         st.markdown(f"""
 **Strategy Inputs**
 
@@ -2846,7 +2936,7 @@ with tab_rules:
 
         st.divider()
 
-        st.markdown("## ⚡ Keltner Channel Strategy")
+        st.markdown("## Keltner Channel Strategy")
         st.markdown(f"""
 | Symbol | Value | Description |
 |--------|-------|-------------|
