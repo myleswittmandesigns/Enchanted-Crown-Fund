@@ -1,7 +1,13 @@
-# Enchanted Crown Fund — Mean Reversion Strategy Rules
+# Enchanted Crown Fund — Strategy Rules
 
 ## Overview
-A mean reversion strategy assumes that price, after deviating significantly from its historical average, will tend to return to that average. Buy signals fire when price is statistically too low; sell signals fire when price is statistically too high.
+
+A cross-sectional mean-reversion strategy applied to a universe of 50 small-cap equities
+(Russell 2000 constituents). Rather than trading a single ticker, the model ranks the
+entire universe daily by how statistically oversold each stock is. The most oversold ticker
+is bought when it crosses a defined entry threshold. Only one position is held at a time.
+The position is exited when price recovers to the upper Bollinger Band on any of three
+lookback windows, or when a stop loss is triggered.
 
 ---
 
@@ -10,27 +16,37 @@ A mean reversion strategy assumes that price, after deviating significantly from
 | Symbol | Name | Description |
 |--------|------|-------------|
 | `t` | Time index | The current trading day |
-| `C(t)` | Closing price | The closing price of the asset on day t |
+| `C(t)` | Closing price | Closing price of the asset on day t |
 | `N` | Lookback period | Number of trading days for SMA and Bollinger Bands |
-| `K` | Std dev multiplier | How many standard deviations define the band edges |
 | `μ(N)` | SMA | Simple moving average of closing prices over N days |
-| `d(i)` | Deviation | C(i) − μ(N) — how far day i's close sits from the mean |
-| `σ(N)` | Std deviation | Standard deviation of closing prices over N days |
-| `σ²(N)` | Variance | Mean of squared deviations over N days |
-| `Z(t)` | Z-score | How many standard deviations today's price is from the N-day mean |
+| `σ(N)` | Std deviation | Standard deviation of closing prices over N days (population, ddof=0) |
+| `Z(t,N)` | Z-score | How many standard deviations today's price is from the N-day mean |
+| `Z_composite` | Composite Z-score | Mean of Z(t,N1), Z(t,N2), Z(t,N3) — the primary ranking signal |
+| `K` | Std dev multiplier | Band width in standard deviations; entry threshold = −K |
 | `StopPct` | Stop loss % | Maximum tolerated loss from entry before forced exit |
 | `P_entry` | Entry price | Closing price on the day the buy signal fired |
+| `N_base` | Base lookback | Shortest of the three windows; N2 = N_base + Gap, N3 = N_base + 2×Gap |
+| `Gap` | Window spacing | Days between each consecutive lookback window |
 
 ---
 
 ## Inputs
 
-| Parameter | Symbol | Default | Description |
-|-----------|--------|---------|-------------|
-| Lookback period | `N` | **47** | Number of trading days for all indicators |
-| Standard deviation multiplier | `K` | **2.0** | Band width in standard deviations |
-| Stop loss threshold | `StopPct` | **46%** | Exit if close falls ≥ 46% below entry price |
-| Take profit rule | — | **Close crosses upper BB** | Exit when close crosses above the upper Bollinger Band |
+| Parameter | Symbol | Current Value | Description |
+|-----------|--------|---------------|-------------|
+| Base lookback | `N_base` | **28** | Shortest Bollinger Band window (N1) |
+| Window gap | `Gap` | **12** | Spacing between windows; N2 = N1+Gap, N3 = N1+2×Gap |
+| Window 1 | `N1` | **38** | N_base + 0×Gap |
+| Window 2 | `N2` | **50** | N_base + 1×Gap |
+| Window 3 | `N3` | **62** | N_base + 2×Gap |
+| Band multiplier | `K` | **1.7** | Entry threshold = composite Z ≤ −1.7 |
+| Stop loss | `StopPct` | **30%** | Exit if close falls ≥ 30% below entry price |
+| Universe | — | **50 tickers** | Russell 2000 small-cap constituents |
+| Position size | — | **$10,000** | Fixed notional per trade (not full-balance) |
+| Max positions | — | **1** | Single position at a time |
+
+Parameters are auto-loaded from the latest `cs_summary_*.csv` each night. Do not edit values
+here manually — update them by running the backtester and committing updated reports.
 
 ---
 
@@ -42,237 +58,218 @@ A mean reversion strategy assumes that price, after deviating significantly from
 μ(N) = ( C(t) + C(t-1) + ... + C(t-N+1) ) / N
 ```
 
-| Symbol | Definition |
-|--------|------------|
-| `μ(N)` | The resulting SMA value — the mean price over the window |
-| `C(t)` | Closing price on the current day |
-| `C(t-1) ... C(t-N+1)` | Closing prices on each of the previous N-1 days |
-| `N` | Number of days in the lookback window |
-
-The mean price over the last N days. This is the "equilibrium" the strategy expects price to revert to.
-
----
-
 ### Bollinger Bands
 
 ```
-d(i)            = C(i) − μ(N)
-σ²(N)           = (1/N) × Σ d(i)²       for i = t-N+1 to t
-σ(N)            = √σ²(N)
-Middle Band(t)  = μ(N)
-Upper Band(t)   = μ(N) + K × σ(N)
-Lower Band(t)   = μ(N) − K × σ(N)
-Z(t)            = ( C(t) − μ(N) ) / σ(N)
+σ(N)           = sqrt( (1/N) × Σ (C(i) − μ(N))²  )   for i = t-N+1 to t   [population std, ddof=0]
+Upper Band(t)  = μ(N) + K × σ(N)
+Lower Band(t)  = μ(N) − K × σ(N)
 ```
-
-| Symbol | Definition |
-|--------|------------|
-| `d(i)` | Deviation of day i's close from the N-day mean |
-| `σ²(N)` | Variance — average of squared deviations over N days |
-| `σ(N)` | Standard deviation — square root of variance, in price units (dollars) |
-| `μ(N)` | The middle band — the N-day SMA |
-| `K` | Number of standard deviations that define the band edges (default: 2) |
-| `Z(t)` | Z-score — how many standard deviations today's price sits from the mean |
-
-A signal fires when \|Z(t)\| > K. The bands self-adjust to volatility — wider when price has been volatile, narrower when calm.
 
 **Standard deviation method: population (ddof=0), not sample (ddof=1).**
-The formula above divides by N, not N−1. This is a deliberate choice — we are describing the full N-day window as the complete population of interest, not a sample drawn from a larger distribution. Using population std produces slightly narrower bands than sample std, which means signals fire marginally more often. Any implementation must use `ddof=0` to match backtested results.
+The formula divides by N, not N−1. Any implementation must use `ddof=0` to match backtested results.
+
+### Z-Score (per window)
+
+```
+Z(t, N) = ( C(t) − μ(N) ) / σ(N)
+```
+
+A Z-score of −1.7 means price is 1.7 standard deviations below its N-day mean — statistically oversold.
+
+### Composite Z-Score
+
+```
+Z_composite(t) = mean( Z(t, N1),  Z(t, N2),  Z(t, N3) )
+```
+
+Averaging across three lookback windows implements the **multi-lookback consensus** principle:
+a ticker must be oversold across short, medium, and long windows simultaneously, not just
+one. This significantly reduces false signals compared to a single-window model.
 
 ---
 
-## Signal Rules (Current)
+## Signal Rules
 
-### Buy Signal ▲
-All of the following must be true:
-
-```
-1. C(t)   < Lower Band(t)      ← price has broken below the lower band TODAY
-2. C(t-1) ≥ Lower Band(t-1)    ← price was still inside the band YESTERDAY
-```
-
-| Symbol | Definition |
-|--------|------------|
-| `C(t)` | Today's closing price |
-| `C(t-1)` | Yesterday's closing price |
-| `Lower Band(t)` | μ(N) − K × σ(N) calculated on today's N-day window |
-| `Lower Band(t-1)` | μ(N) − K × σ(N) calculated on yesterday's N-day window |
-
-This fires only on the **first day** price crosses below the lower Bollinger Band.
-
-### Sell Signal ▼
-All of the following must be true:
+### Entry (when FLAT — no open position)
 
 ```
-1. C(t)   > Upper Band(t)      ← price has broken above the upper band TODAY
-2. C(t-1) ≤ Upper Band(t-1)    ← price was still inside the band YESTERDAY
+1. Compute Z_composite for every ticker in the universe
+2. Identify the ticker with the lowest Z_composite (most oversold)
+3. BUY if Z_composite ≤ −K   (i.e. ≤ −1.7)
 ```
 
-| Symbol | Definition |
-|--------|------------|
-| `C(t)` | Today's closing price |
-| `C(t-1)` | Yesterday's closing price |
-| `Upper Band(t)` | μ(N) + K × σ(N) calculated on today's N-day window |
-| `Upper Band(t-1)` | μ(N) + K × σ(N) calculated on yesterday's N-day window |
+The model buys the single most oversold ticker in the universe on the day the threshold is
+crossed. If no ticker is below −K, the model remains in cash.
 
-This fires only on the **first day** price crosses above the upper Bollinger Band.
+**Only one position is held at a time.** Once a position is open, the entry check is
+skipped entirely until the position is closed. The model never switches tickers mid-trade.
 
----
+### Exit — Take Profit (when HOLDING)
 
-## Exit Rules (Active Positions)
-
-Once a buy signal fires and a position is entered at `P_entry`, the position is held until **one** of the following conditions is met — whichever comes first:
-
-### Take Profit ✅
 ```
-C(t)   > Upper Band(t)
-C(t-1) ≤ Upper Band(t-1)
+For each window n in [N1, N2, N3]:
+    if C(t) > Upper Band(t, n)  AND  C(t-1) ≤ Upper Band(t-1, n):
+        EXIT
 ```
-Exit on the first day close crosses above the upper Bollinger Band.
 
-### Stop Loss 🛑
+Exit on the first day close crosses above the upper Bollinger Band on **any** of the three
+windows. Whichever window triggers first ends the trade. This mirrors the backtester exactly.
+
+### Exit — Stop Loss (when HOLDING)
+
 ```
 C(t) ≤ P_entry × (1 − StopPct)
-C(t) ≤ P_entry × 0.54        ← at StopPct = 46%
+C(t) ≤ P_entry × 0.70           ← at StopPct = 30%
 ```
-Exit when today's close has fallen 46% or more below the entry price. This caps the maximum loss on any single trade.
 
-| Symbol | Definition |
-|--------|------------|
-| `C(t)` | Today's closing price |
-| `μ(N)` | N-day SMA on today's window |
-| `P_entry` | Closing price on the day the buy signal fired |
-| `StopPct` | 0.46 — the maximum tolerated drawdown from entry |
+Exit when close falls 30% or more below the entry price. This caps the maximum loss on any
+single trade. Stop loss is checked before take profit each day.
 
 ---
 
 ## Portfolio Model
 
-All backtesting and simulation uses a **compounding reinvestment model**:
-
-```
-shares(t)     = balance(t) / P_entry
-balance(t+1)  = shares(t) × P_exit
-```
-
 | Rule | Description |
 |------|-------------|
-| Starting capital | $5,000 (configurable via `INITIAL_CAPITAL` in backtester) |
-| Position sizing | Full balance allocated to every trade — no partial positions |
-| Reinvestment | All proceeds (gains and losses) are reinvested in the next trade |
-| Idle cash | Balance sits in cash between trades — no interest modeled |
+| Position size | Fixed **$10,000** notional per trade |
+| Max positions | **1** — fully single-position, never diversified |
+| Order type | Market order at next open (DAY time-in-force) |
+| Idle cash | Remainder of portfolio sits in cash between trades |
+| Entry price | Sourced from Alpaca `avg_entry_price` on the live position |
+| Compounding | Not applicable — fixed notional, not full-balance reinvestment |
 
-This means each trade compounds on the result of the last. A string of wins grows the position size; a loss shrinks it. There is no diversification — this is a single-asset, fully-invested model.
+---
+
+## Execution Schedule
+
+| Step | Time | Action |
+|------|------|--------|
+| Data update | ~11:00pm ET weeknights | Fetch latest OHLCV from Massive API |
+| Backtester | ~11:05pm ET | Re-run all 3 phases (BB, ML, CS) |
+| Signal email | ~11:35pm ET | Send daily summary to myleswittman@gmail.com |
+| Alpaca trader | ~11:36pm ET | Evaluate signal vs current positions; place orders if needed |
+| Order fills | 9:30am ET next morning | Market orders execute at open |
 
 ---
 
 ## Scoring
 
-The backtester ranks parameter combinations using a **composite Score** that rewards both high return and risk discipline:
+The backtester ranks parameter combinations using a composite Score:
 
 ```
-Score = Total Return % × RDR ÷ SCORE_DIVISOR
-RDR   = Total Return $ ÷ Max Drawdown $
+Score = Total Return % × RDR / 100
+RDR   = Total Return $ / Max Drawdown $
 ```
 
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `SCORE_DIVISOR` | **100** | Scales the score range. Edit in backtester config. |
-
-A strategy that earns high returns but with a large drawdown scores lower than one that earns the same return more smoothly. RDR above 5 is considered good. `SCORE_DIVISOR` is purely cosmetic — it compresses the number range and does not affect ranking order.
+A strategy that earns high returns with a large drawdown scores lower than one earning the
+same return more smoothly. RDR above 3.0 is the minimum threshold; above 5.0 is strong.
 
 ---
 
-## Walk-Forward Analysis Parameters
+## Parameter Optimization
 
-Walk-forward analysis validates strategy robustness by optimizing on a train window and evaluating out-of-sample on a test window, rolling forward in steps across the full history.
+The cross-sectional backtester performs a full grid search each run across:
 
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `WF_TRAIN_YEARS` | **3** | Length of the optimization (training) window in years |
-| `WF_TEST_YEARS` | **1** | Length of the out-of-sample (test) window in years |
-| `WF_STEP_MONTHS` | **6** | How many months to slide the window forward each step |
-| `WF_MIN_TRADES` | **3** | Minimum completed trades required within a single walk-forward training window. Lower than MIN_TRADES because windows are shorter than the full history. |
+| Parameter | Search Range | Current Best |
+|-----------|-------------|--------------|
+| N_base | 16 to 40 (step 1) | 28 |
+| Gap | 5, 8, 10, 12, 15 | 12 |
+| K | 1.5 to 3.2 (step 0.1) | 1.7 |
+| Stop % | 20%, 30%, 40%, 50%, 60% | 30% |
 
-A strategy is considered robust if the best parameters found during training produce positive out-of-sample returns consistently across most windows.
-
----
-
-## Parameter Validation Rule
-
-A backtester recommendation for N and K is only considered **trustworthy** if it passes the following neighborhood test:
-
-### Minimum RDR Rule
-A parameter combination must achieve a **Return-to-Drawdown Ratio of at least 5**. This ensures the strategy earns meaningfully more than it risks losing at its worst point.
-
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `RDR_THRESHOLD` | **5** | Minimum acceptable RDR. Edit in backtester config. |
+Grid size: 25 × 5 × 18 × 5 = **11,250 combinations** evaluated per run.
 
 ---
 
-### Minimum Trade Count Rule
-A parameter combination must produce at least **3 completed trades** across the full data history to be considered statistically meaningful. Fewer than 3 trades is not enough evidence to evaluate a strategy.
+## Validation Rules
 
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `MIN_TRADES` | **10** | Minimum completed trades required. Edit in backtester config. |
+A parameter combination is only adopted if it passes all of the following:
 
----
-
-### Minimum CAGR Rule
-A parameter combination is only considered viable if its **CAGR exceeds 20% annually** — roughly 2× the S&P 500 long-run average. Running a concentrated single-stock strategy carries significantly more risk than holding the index, so the return hurdle must be meaningfully higher to justify it.
-
-| Variable | Value | Description |
-|----------|-------|-------------|
-| `CAGR_THRESHOLD` | **20%** | Minimum acceptable annualized return. Edit in backtester config. |
-
-Any combination below this threshold is automatically filtered from the results table. Adjust `CAGR_THRESHOLD` in `backtester.py` if the benchmark changes.
+| Rule | Threshold | Description |
+|------|-----------|-------------|
+| Minimum RDR | ≥ 3.0 | Return-to-Drawdown ratio across full history |
+| Minimum CAGR | ≥ 20% | Annualized return must beat ~2× S&P 500 long-run average |
+| Minimum trades | ≥ 5 | Minimum completed trades for statistical validity |
+| Walk-forward | ≥ 5/9 windows profitable | Out-of-sample robustness test (see below) |
 
 ---
 
-### The 8-Neighbor Rule
-On the N × K score heat map, every one of the 8 cells surrounding the candidate (N±1, K±0.1 in all directions) must:
+## Walk-Forward Analysis
 
-1. **Pass the RDR threshold** — no gray cells in the neighborhood
-2. **Score adequately** — no neighbor more than 50% below the candidate's Score
+Walk-forward analysis validates that the optimized parameters are not overfit to history.
+The model is optimized on a training window and evaluated out-of-sample on a test window,
+rolling forward in steps across the full 10-year history.
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| Train window | 5 years | Period used for optimization |
+| Test window | 1 year | Out-of-sample evaluation period |
+| Step size | 6 months | How far the window slides each iteration |
+| Windows | ~9 | Number of train/test splits across 10 years |
+| WF min trades | 3 | Minimum trades required within a training window |
+| Top combos | 200 | Only the top 200 in-sample combos are walk-forward tested (efficiency) |
+
+Current walk-forward result: **5/9 windows profitable** — the model generated positive
+out-of-sample returns in 5 of 9 rolling test periods.
+
+---
+
+## Response Surface Test (Overfitting Check)
+
+Before adopting any parameter set, the **radio-knob test** is applied: hold all parameters
+fixed at their optimal values and vary one parameter at a time across its full range.
+
+- **Smooth curve** → parameter is well-generalized
+- **Flat curve** → parameter has negligible effect; consider removing
+- **Spiky curve** → parameter is likely overfit to an unrepeatable historical event
+
+Smoothness is quantified by Normalized Total Variation (NTV):
 
 ```
-Neighborhood of candidate (N₀, K₀):
-
-  (N₀−1, K₀−0.1)  (N₀−1, K₀)  (N₀−1, K₀+0.1)
-  (N₀,   K₀−0.1)  [CANDIDATE]  (N₀,   K₀+0.1)
-  (N₀+1, K₀−0.1)  (N₀+1, K₀)  (N₀+1, K₀+0.1)
+NTV = Σ|Δy| / range(y)
 ```
 
-If any neighbor is gray or falls below 50% of the candidate's Score, the candidate sits on a spike rather than a plateau — do not adopt those parameters.
+| NTV | Interpretation |
+|-----|----------------|
+| < 2.5 | Smooth — well-generalized |
+| 2.5 – 5.0 | Moderate — monitor carefully |
+| ≥ 5.0 | Spiky — overfit risk |
 
-### Rationale
-A parameter set that is surrounded by strong neighbors demonstrates **robustness**: small errors in estimation or future drift in market conditions will not collapse performance. An isolated spike indicates the result was tuned to historical noise.
-
-### How to apply
-After each backtester run, open the heat map in the report and visually inspect the 8 cells surrounding the top-scored result before updating `STRATEGY_RULES.md`. Only update N and K if the neighborhood test passes.
-
----
-
-## What the Rules Currently Ignore
-The following factors are **not yet incorporated** into signal logic:
-
-- Volume — is the move backed by conviction?
-- Trend filter — is the broader trend up or down?
-- Gap opens — overnight jumps that aren't "real" intraday moves
-- Fundamental events — earnings, FDA announcements, news
-- Stop-loss — no exit rule if the trade goes wrong
-- Position sizing — no rule for how much to buy/sell
+The Response Surface tab in the app shows 1D slice charts and NTV scores for all four
+parameters after every backtest run.
 
 ---
 
-## Planned Enhancements
-- [ ] Add volume filter: only signal if volume > N-day average volume
-- [ ] Add trend filter: only buy if price is above 200-day SMA
-- [ ] Define stop-loss rule: exit if price falls X% below entry
-- [ ] Define take-profit rule: exit when price returns to SMA (middle band)
-- [ ] Backtest all rules against historical GSIT data
+## Current Backtested Performance (as of 2026-06-06)
+
+| Metric | Value |
+|--------|-------|
+| CAGR | 65.0% |
+| Total Return | 18,298% |
+| RDR | 3.26 |
+| Win Rate | 76.3% |
+| Max Drawdown | 25.3% |
+| Total Trades | 59 |
+| Avg Hold | 40.5 days |
+| Walk-Forward | 5/9 windows profitable |
+| Data period | 10.4 years |
+
+---
+
+## Bollinger Tab Reference Parameters
+
+The **Bollinger** tab in the app visualizes a single-ticker, single-window BB strategy
+for research purposes. It reads the following parameters from this file:
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| `N` | **50** | Single lookback window for the Bollinger tab chart |
+| `K` | **1.7** | Band multiplier |
+| `StopPct` | **30%** | Stop loss threshold |
+
+These are set to match the cross-sectional model's middle window (N2) and shared K/Stop
+values so the single-ticker visualization stays consistent with the live model.
 
 ---
 
@@ -280,86 +277,8 @@ The following factors are **not yet incorporated** into signal logic:
 
 | Version | Date | Change |
 |---------|------|--------|
-| 1.0 | 2026-06-02 | Initial rules — Bollinger Band crossover signals only |
-| 1.1 | 2026-06-02 | Changed RSI period from fixed R=14 to R=N. Added full variable definitions and derivation notes. |
-| 1.2 | 2026-06-02 | Added Open Questions section. Flagged RSI thresholds 70/30 for future GSIT-specific calibration. |
-| 1.3 | 2026-06-02 | Added inline variable definition tables below every equation throughout the document. |
-| 1.4 | 2026-06-02 | Removed RSI entirely — variable definitions, inputs, indicator section, planned enhancements, open questions, and derivation notes. |
-| 1.5 | 2026-06-02 | Updated params to backtester optimum: N=24, K=2.3. Added StopPct=46% and Take Profit (Close ≥ SMA) to Inputs and Exit Rules section. |
-| 1.6 | 2026-06-03 | Added Parameter Validation Rule — the 8-neighbor robustness test for backtester recommendations. |
-| 1.7 | 2026-06-03 | Added Minimum CAGR Rule — filter out any param set with CAGR below S&P 500 average (~10%). |
-| 1.8 | 2026-06-03 | Added Minimum Trade Count Rule — filter out param sets with fewer than 3 completed trades. |
-| 1.9 | 2026-06-03 | Added Portfolio Model, Scoring, and population std (ddof=0) rule to Bollinger Bands section. |
-| 2.0 | 2026-06-03 | Updated params to backtester optimum: N=51, K=2.0. Changed take-profit to Close crosses upper BB. Raised MIN_TRADES to 10. |
-| 2.1 | 2026-06-04 | Testing N=47, K=2.0. |
-| 2.2 | 2026-06-04 | Reverted LR slope filter from BB strategy. Added Keltner Channel strategy section. |
-
----
-
-## ⚡ Keltner Channel Strategy
-
-### Overview
-Same mean reversion concept as Bollinger Bands, but uses EMA (exponential moving average) as the middle line and ATR (Average True Range) as the volatility measure instead of standard deviation. Includes a linear regression slope trend filter — only takes buy signals when the medium-term trend is pointing up.
-
-### Inputs
-
-| Parameter | Symbol | Default | Description |
-|-----------|--------|---------|-------------|
-| Lookback period | `KC_N` | **20** | EMA and ATR window (trading days) |
-| ATR multiplier | `KC_K` | **1.5** | Band width in ATR units |
-| Stop loss threshold | `KC_StopPct` | **46%** | Exit if close falls ≥ 46% below entry |
-| Trend filter period | `KC_LR_PERIOD` | **50** | Linear regression slope lookback (days). Set to 0 to disable. |
-
-### Indicator Definitions
-
-**EMA (Exponential Moving Average)**
-```
-EMA(t) = α × C(t) + (1 − α) × EMA(t−1)     where α = 2 / (KC_N + 1)
-```
-Weights recent prices more heavily than SMA.
-
-**ATR (Average True Range)**
-```
-TR(t)       = max( H(t)−L(t),  |H(t)−C(t−1)|,  |L(t)−C(t−1)| )
-ATR(KC_N)   = rolling mean of TR over KC_N days
-Upper Band  = EMA + KC_K × ATR
-Lower Band  = EMA − KC_K × ATR
-```
-
-**Linear Regression Slope**
-```
-Fit least-squares line to last KC_LR_PERIOD closing prices
-LR_Slope > 0  →  uptrend  →  buy signals allowed
-LR_Slope ≤ 0  →  downtrend →  buy signals suppressed
-```
-
-### Signal Rules
-
-**Buy Signal ▲** — all must be true:
-```
-1. C(t)   < Lower Band(t)
-2. C(t-1) ≥ Lower Band(t-1)
-3. LR_Slope(t) > 0   (omit if KC_LR_PERIOD = 0)
-```
-
-**Sell Signal ▼:**
-```
-1. C(t)   > Upper Band(t)
-2. C(t-1) ≤ Upper Band(t-1)
-```
-
-### Exit Rules
-- **Take profit:** Close crosses above upper Keltner Band
-- **Stop loss:** Close ≤ entry × (1 − KC_StopPct)
-
-### Validation Rules
-
-| Parameter | Symbol | Value | Description |
-|-----------|--------|-------|-------------|
-| Min RDR | `KC_RDR_THRESHOLD` | **5** | Minimum Return-to-Drawdown Ratio |
-| Min trades | `KC_MIN_TRADES` | **10** | Minimum completed trades |
-| Min CAGR | `KC_CAGR_THRESHOLD` | **20%** | Minimum annualized return |
-| WF train window | `KC_WF_TRAIN_YEARS` | **3** | Walk-forward training window (years) |
-| WF test window | `KC_WF_TEST_YEARS` | **1** | Walk-forward test window (years) |
-| WF step | `KC_WF_STEP_MONTHS` | **6** | Walk-forward step (months) |
-| WF min trades | `KC_WF_MIN_TRADES` | **3** | Min trades per WF training window |
+| 1.0 | 2026-06-02 | Initial rules — single-ticker Bollinger Band crossover |
+| 1.1–1.9 | 2026-06-02–03 | Iterative refinements: removed RSI, added stop-loss, portfolio model, walk-forward, scoring, 8-neighbor robustness test |
+| 2.0 | 2026-06-03 | Updated params: N=51, K=2.0. Take-profit changed to upper BB crossover. |
+| 2.1–2.2 | 2026-06-04 | Tested N=47. Added/reverted Keltner Channel strategy. |
+| 3.0 | 2026-06-06 | **Full rewrite.** Model replaced with cross-sectional multi-lookback consensus engine. Single-ticker approach retired. Entry now uses composite Z-score across N1/N2/N3 windows. Live paper trading via Alpaca enabled. |
