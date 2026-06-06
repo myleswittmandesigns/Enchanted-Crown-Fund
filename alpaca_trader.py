@@ -36,6 +36,8 @@ SECRET_KEY      = os.environ.get("ALPACA_SECRET_KEY", "")
 
 MODE = "LIVE PAPER" if TRADING_ENABLED else "DRY RUN"
 
+BUY_NOTIONAL = 10_000.00  # Fixed dollar amount per trade
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,15 +97,15 @@ def get_portfolio_value(client) -> float:
         return 0.0
 
 
-def place_buy(client, ticker: str, portfolio_value: float):
-    """Buy ticker using full portfolio value (market order, next open)."""
+def place_buy(client, ticker: str):
+    """Buy $BUY_NOTIONAL of ticker (market order, next open)."""
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     # Use notional (dollar amount) so we get fractional shares if needed
     order = MarketOrderRequest(
         symbol=ticker,
-        notional=round(portfolio_value * 0.99, 2),  # 1% buffer for fees/slippage
+        notional=BUY_NOTIONAL,
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY,
     )
@@ -178,12 +180,11 @@ def main():
                     print(f"[alpaca]   SELL failed: {e}")
 
         elif action == "BUY":
-            notional = round(portfolio_value * 0.99, 2)
-            print(f"[alpaca] {MODE} → BUY  ${notional:,.2f} of {ticker}"
-                  f" (~{notional / last_price:.1f} shares @ ${last_price:.2f})")
+            print(f"[alpaca] {MODE} → BUY  ${BUY_NOTIONAL:,.2f} of {ticker}"
+                  + (f" (~{BUY_NOTIONAL / last_price:.1f} shares @ ${last_price:.2f})" if last_price else ""))
             if TRADING_ENABLED:
                 try:
-                    order = place_buy(client, ticker, portfolio_value)
+                    order = place_buy(client, ticker)
                     print(f"[alpaca]   Order submitted: {order.id} | status: {order.status}")
                 except Exception as e:
                     print(f"[alpaca]   BUY failed: {e}")
