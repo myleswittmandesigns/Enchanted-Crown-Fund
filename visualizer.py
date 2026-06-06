@@ -15,15 +15,116 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .block-container { padding: 1rem 1rem 2rem 1rem !important; max-width: 100% !important; }
-    .stDateInput { font-size: 1rem !important; }
-    [data-testid="metric-container"] {
-        background: #f8f9fa; border-radius: 10px;
-        padding: 0.6rem 0.8rem; margin-bottom: 0.5rem;
+/* ── Base styles ──────────────────────────────────────────────────────────── */
+.block-container {
+    padding: 1rem 1rem 2rem 1rem !important;
+    max-width: 100% !important;
+}
+.stDateInput { font-size: 1rem !important; }
+[data-testid="metric-container"] {
+    background: #f8f9fa;
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 0.5rem;
+}
+h1 { font-size: 1.6rem !important; }
+h2 { font-size: 1.1rem !important; }
+.streamlit-expanderHeader { font-size: 1rem !important; padding: 0.75rem !important; }
+
+/* ── Tabs — horizontally scrollable, no wrapping ──────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch !important;
+    flex-wrap: nowrap !important;
+    scrollbar-width: none !important;
+    gap: 2px !important;
+}
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none !important; }
+
+/* ── Mobile — portrait phones (≤ 768 px) ─────────────────────────────────── */
+@media screen and (max-width: 768px) {
+
+    .block-container { padding: 0.5rem 0.5rem 1rem !important; }
+
+    /* Tabs — smaller text, tight padding */
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.68rem !important;
+        padding: 6px 7px !important;
+        white-space: nowrap !important;
     }
-    h1 { font-size: 1.6rem !important; }
-    h2 { font-size: 1.1rem !important; }
-    .streamlit-expanderHeader { font-size: 1rem !important; padding: 0.75rem !important; }
+
+    /* All column rows wrap at 2-per-row */
+    .stHorizontalBlock {
+        flex-wrap: wrap !important;
+        gap: 0.4rem 0.5rem !important;
+    }
+    [data-testid="column"] {
+        min-width: calc(50% - 0.5rem) !important;
+        flex: 1 1 calc(50% - 0.5rem) !important;
+        box-sizing: border-box !important;
+    }
+
+    /* Metric cards — tighter, smaller text */
+    [data-testid="metric-container"] {
+        padding: 0.35rem 0.45rem !important;
+        margin-bottom: 0.3rem !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 0.95rem !important;
+        line-height: 1.2 !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.65rem !important;
+    }
+    [data-testid="stMetricDelta"] svg { display: none !important; }
+
+    /* Headings */
+    h1 { font-size: 1.2rem !important; }
+    h2 { font-size: 0.95rem !important; }
+    h3 { font-size: 0.9rem !important; }
+
+    /* Dataframes — horizontal scroll, don't blow out page width */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        max-width: 100vw !important;
+    }
+    [data-testid="stDataFrame"] iframe {
+        max-width: 100% !important;
+    }
+
+    /* Plotly charts — prevent overflow */
+    [data-testid="stPlotlyChart"] {
+        overflow-x: auto !important;
+        max-width: 100vw !important;
+    }
+
+    /* Number inputs — full width */
+    [data-testid="stNumberInput"] { width: 100% !important; }
+
+    /* Expander header padding */
+    .streamlit-expanderHeader { padding: 0.5rem 0.75rem !important; font-size: 0.85rem !important; }
+
+    /* Caption / small text */
+    .stCaption, [data-testid="stCaptionContainer"] { font-size: 0.7rem !important; }
+
+    /* Buttons in nav (← Prev / Next →) */
+    .stButton button {
+        font-size: 0.8rem !important;
+        padding: 0.3rem 0.5rem !important;
+    }
+}
+
+/* ── Very small phones (≤ 420 px) ─────────────────────────────────────────── */
+@media screen and (max-width: 420px) {
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.6rem !important;
+        padding: 5px 5px !important;
+    }
+    [data-testid="stMetricValue"] { font-size: 0.85rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.6rem !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -32,8 +133,8 @@ st.subheader("Mean Reversion Strategy")
 
 # ── Top-level tabs ─────────────────────────────────────────────────────────────
 tab_daily, tab_viz, tab_bt, tab_ml, tab_cs, tab_rs, tab_rules = st.tabs([
-    "📅 Daily Signal", "📈 Bollinger", "⚙️ BB Backtest", "📊 Multi-Lookback",
-    "🎯 Cross-Sectional", "🔬 Response Surface", "📋 Strategy Rules"
+    "📅 Signal", "📈 Bollinger", "⚙️ Backtest", "📊 Multi-LB",
+    "🎯 Cross-Sec", "🔬 Resp Surface", "📋 Rules"
 ])
 # ARCHIVED tabs (KC + Combined — low confidence, re-enable when ready):
 # tab_kc_viz, tab_combined, tab_kc_bt
@@ -269,7 +370,7 @@ with tab_daily:
         fig_rank.update_layout(
             xaxis_title="Composite Z-Score (lower = more oversold)",
             yaxis=dict(autorange="reversed", tickfont=dict(size=11)),
-            margin=dict(t=30, b=50, l=100, r=80),
+            margin=dict(t=30, b=50, l=80, r=60),
             height=chart_height,
             showlegend=False,
         )
@@ -547,24 +648,24 @@ with tab_viz:
 
         _sig = _all_signals[st.session_state.nav_idx]
 
-        _c1, _c2, _c3 = st.columns([1, 5, 1])
+        # Signal info above buttons — works at any screen width
+        st.markdown(
+            f"<div style='text-align:center;padding:0.25rem 0 0.5rem 0;font-size:0.9rem;'>"
+            f"Signal <strong>{st.session_state.nav_idx + 1}</strong> of <strong>{len(_all_signals)}</strong>"
+            f" &nbsp;·&nbsp; <strong>{_sig['type']}</strong>"
+            f" &nbsp;·&nbsp; {_sig['date'].strftime('%b %d, %Y')}"
+            f" &nbsp;·&nbsp; ${_sig['price']:.2f}"
+            f"</div>", unsafe_allow_html=True
+        )
+        _c1, _c2 = st.columns(2)
         with _c1:
             if st.button("← Prev", disabled=st.session_state.nav_idx == 0, use_container_width=True):
                 st.session_state.nav_idx -= 1
                 st.rerun()
-        with _c3:
+        with _c2:
             if st.button("Next →", disabled=st.session_state.nav_idx == len(_all_signals) - 1, use_container_width=True):
                 st.session_state.nav_idx += 1
                 st.rerun()
-        with _c2:
-            st.markdown(
-                f"<div style='text-align:center;padding-top:0.35rem'>"
-                f"Signal <strong>{st.session_state.nav_idx + 1}</strong> of <strong>{len(_all_signals)}</strong>"
-                f" &nbsp;·&nbsp; <strong>{_sig['type']}</strong>"
-                f" &nbsp;·&nbsp; {_sig['date'].strftime('%b %d, %Y')}"
-                f" &nbsp;·&nbsp; ${_sig['price']:.2f}"
-                f"</div>", unsafe_allow_html=True
-            )
 
         _WIN    = 30
         _fi     = df_full[df_full["Date"] == _sig["date"]].index
