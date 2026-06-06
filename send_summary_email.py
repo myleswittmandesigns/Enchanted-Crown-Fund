@@ -77,7 +77,7 @@ def compute_zscores(n1: int, n2: int, n3: int):
             valid = True
             for n in [n1, n2, n3]:
                 sma = close.rolling(n).mean()
-                std = close.rolling(n).std()
+                std = close.rolling(n).std(ddof=0)
                 if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]) or std.iloc[-1] < 1e-9:
                     valid = False; break
                 z = float((close.iloc[-1] - sma.iloc[-1]) / std.iloc[-1])
@@ -149,7 +149,7 @@ def build_bb_chart(ticker: str, n1: int, n2: int, n3: int, k: float) -> str:
     # ── Bollinger Bands ───────────────────────────────────────────────────────
     for idx, n in enumerate([n1, n2, n3]):
         sma  = close_full.rolling(n).mean()
-        std  = close_full.rolling(n).std()
+        std  = close_full.rolling(n).std(ddof=0)
         upper = sma + k * std
         lower = sma - k * std
 
@@ -236,37 +236,50 @@ def build_html_email(sig, smr, df_z, chart_b64: str) -> tuple[str, str]:
     n_valid  = len(df_z)
 
     # Subject
-    if state == "HOLDING":
+    if state == "SELL":
+        subject = f"[ECF] SELL SIGNAL — {ticker} | {sig.get('Reason', 'exit condition met')}"
+    elif state == "HOLDING":
         unreal = float(sig.get("Unrealized %", 0))
         sign   = "+" if unreal >= 0 else ""
         subject = f"[ECF] Holding {ticker} ({sign}{unreal:.1f}%) | Top candidate: {top_tick} (Z={top_z:.3f})"
     elif top_z <= entry_threshold:
-        subject = f"[ECF] 🚨 BUY SIGNAL — {top_tick}  (Composite Z = {top_z:.3f})"
+        subject = f"[ECF] BUY SIGNAL — {top_tick}  (Composite Z = {top_z:.3f})"
     else:
         subject = f"[ECF] Daily Update {today} | No active signal | Top: {top_tick} Z={top_z:.3f}"
 
     # Signal status banner
-    if top_z <= entry_threshold and state != "HOLDING":
+    if state == "SELL":
+        banner_bg    = "#450a0a"
+        banner_color = "#fca5a5"
+        reason       = sig.get("Reason", "exit condition met")
+        entry_price  = sig.get("Entry $", 0.0)
+        last_price   = sig.get("Last $",  0.0)
+        banner_text  = (
+            f"SELL SIGNAL — {ticker} &nbsp;·&nbsp; {reason} &nbsp;·&nbsp; "
+            f"Entry ${float(entry_price):.2f} → Last ${float(last_price):.2f}"
+        )
+    elif top_z <= entry_threshold and state != "HOLDING":
         banner_bg    = "#7f1d1d"
         banner_color = "#fca5a5"
-        banner_text  = f"🚨 BUY SIGNAL — {top_tick}"
+        banner_text  = f"BUY SIGNAL — {top_tick}"
     elif state == "HOLDING":
         unreal = float(sig.get("Unrealized %", 0))
         banner_bg    = "#1e3a5f" if unreal >= 0 else "#3b1f1f"
         banner_color = "#93c5fd" if unreal >= 0 else "#fca5a5"
-        entry_date   = sig.get("Entry Date", "—")
+        entry_date   = sig.get("Entry Date", None)
         entry_price  = sig.get("Entry $", 0.0)
         last_price   = sig.get("Last $", 0.0)
         sign         = "+" if unreal >= 0 else ""
+        since_str    = f"since {entry_date} &nbsp;·&nbsp; " if entry_date and str(entry_date) not in ("—", "nan", "None", "") else ""
         banner_text  = (
-            f"🟡 Holding {ticker} since {entry_date} &nbsp;·&nbsp; "
+            f"Holding {ticker} {since_str}"
             f"${float(entry_price):.2f} → ${float(last_price):.2f} "
             f"({sign}{unreal:.1f}%)"
         )
     else:
         banner_bg    = "#1c1c1c"
         banner_color = "#9ca3af"
-        banner_text  = "⚪ No current position"
+        banner_text  = "No current position"
 
     # Top 10 ranking table rows
     z_col1, z_col2, z_col3 = f"Z({n1})", f"Z({n2})", f"Z({n3})"
@@ -498,7 +511,7 @@ def main():
     state    = str(sig.get("State", "FLAT")).upper()
 
     # Generate chart if: active buy signal OR the top candidate is within 80% of the threshold
-    should_chart = top_z <= entry_threshold or top_z <= entry_threshold * 0.7
+    should_chart = top_z <= entry_threshold * 0.7  # chart when at or approaching threshold
     chart_b64 = ""
     if should_chart:
         print(f"[email] Generating BB chart for {top_tick} ...")

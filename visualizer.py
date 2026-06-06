@@ -266,7 +266,7 @@ with tab_daily:
                 valid = True
                 for n in [n1, n2, n3]:
                     sma = close.rolling(n).mean()
-                    std = close.rolling(n).std()
+                    std = close.rolling(n).std(ddof=0)
                     if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]) or std.iloc[-1] == 0:
                         valid = False; break
                     z = (close.iloc[-1] - sma.iloc[-1]) / std.iloc[-1]
@@ -318,7 +318,17 @@ with tab_daily:
         state  = str(sig.get("State", "FLAT")).upper()
         ticker = str(sig.get("Ticker", "—"))
 
-        if state == "HOLDING":
+        if state == "SELL":
+            entry_price = sig.get("Entry $", 0.0)
+            last_price  = sig.get("Last $",  0.0)
+            reason      = sig.get("Reason",  "exit condition met")
+            st.markdown("### Exit Signal — Sell Today")
+            st.error(
+                f"**SELL {ticker}** — {reason}. "
+                f"Entry ${float(entry_price):.2f} → Last ${float(last_price):.2f}. "
+                "The Alpaca trader will place a market sell order tonight."
+            )
+        elif state == "HOLDING":
             entry_date   = sig.get("Entry Date", "—")
             entry_price  = sig.get("Entry $",    0.0)
             last_price   = sig.get("Last $",     0.0)
@@ -329,23 +339,25 @@ with tab_daily:
 
             st.markdown("### Current Position")
             p1, p2, p3, p4, p5 = st.columns(5)
-            p1.metric("Ticker",          ticker)
-            p2.metric("Entry Date",      entry_date)
-            p3.metric("Entry Price",     f"${float(entry_price):.2f}")
-            p4.metric("Last Price",      f"${float(last_price):.2f}",
+            p1.metric("Ticker",       ticker)
+            p2.metric("Entry Date",   entry_date if entry_date != "—" else "Via Alpaca")
+            p3.metric("Entry Price",  f"${float(entry_price):.2f}")
+            p4.metric("Last Price",   f"${float(last_price):.2f}",
                       delta=f"{float(unreal_pct):+.2f}%")
-            p5.metric("Today's Rank",    f"#{cur_rank} / {n_valid}",
+            p5.metric("Today's Rank", f"#{cur_rank} / {n_valid}",
                       help="Lower rank = more oversold = closer to entry signal")
             st.caption(
-                f"Holding since {entry_date}. "
                 f"Today's composite z-score for {ticker}: **{cur_z:.3f}**. "
                 f"Ranked #{cur_rank} of {n_valid} tickers (1 = most oversold). "
                 "The model holds until price crosses the upper band or stop loss triggers — "
                 "a lower-ranked ticker today does **not** trigger a switch."
             )
+        elif state == "BUY":
+            st.markdown("### No Current Position — Buy Signal Active")
+            st.info("The model is flat and a buy signal is active. The Alpaca trader will place a market order tonight.")
         else:
             st.markdown("### No Current Position")
-            st.info("The model is flat. If the top-ranked ticker is below the entry threshold, a buy signal is active.")
+            st.info("The model is flat. No ticker is currently below the entry threshold.")
 
         st.divider()
 
@@ -365,12 +377,12 @@ with tab_daily:
         elif top_z <= entry_threshold * 0.7:
             signal_label = "APPROACHING ENTRY"
         else:
-            signal_label = "WATCHING — below entry threshold"
+            signal_label = "WATCHING — no signal yet"
 
         badge_styles = {
             "ACTIVE BUY SIGNAL":            ("background:#fef2f2;color:#b91c1c;border:1px solid #fca5a5;",),
             "APPROACHING ENTRY":     ("background:#fffbeb;color:#b45309;border:1px solid #fcd34d;",),
-            "WATCHING — below entry threshold": ("background:#f8fafc;color:#475569;border:1px solid #cbd5e1;",),
+            "WATCHING — no signal yet": ("background:#f8fafc;color:#475569;border:1px solid #cbd5e1;",),
         }
         _bs = badge_styles.get(signal_label, ("background:#f8fafc;color:#475569;border:1px solid #cbd5e1;",))[0]
         st.markdown(
@@ -508,7 +520,7 @@ with tab_viz:
     # ── Helpers ───────────────────────────────────────────────────────────────
     def compute_bollinger(close: pd.Series, n: int, k: int):
         sma   = close.rolling(n).mean()
-        std   = close.rolling(n).std()
+        std   = close.rolling(n).std(ddof=0)
         upper = sma + k * std
         lower = sma - k * std
         return sma, upper, lower
@@ -2294,19 +2306,27 @@ with tab_cs:
         if signal is not None and not signal.empty:
             sg    = signal.iloc[0]
             state = str(sg["State"]).upper()
-            if state == "HOLDING":
+            if state == "SELL":
+                st.error(
+                    f"**SELL SIGNAL — {sg['Ticker']}** — {sg.get('Reason', 'exit condition met')}. "
+                    f"Entry ${float(sg.get('Entry $', 0)):.2f} → Last ${float(sg.get('Last $', 0)):.2f}. "
+                    "Alpaca trader will place a market sell order tonight."
+                )
+            elif state == "HOLDING":
+                entry_date = sg.get("Entry Date", "—")
+                entry_info = f"entered {entry_date} @ " if entry_date != "—" else "entry via Alpaca @ "
                 st.success(
-                    f"**HOLDING {sg['Ticker']}** — entered {sg['Entry Date']} @ "
-                    f"${sg['Entry $']:.2f}, last ${sg['Last $']:.2f} "
-                    f"(**{sg['Unrealized %']:+.2f}%** unrealized). Hold until exit; ignore new signals."
+                    f"**HOLDING {sg['Ticker']}** — {entry_info}"
+                    f"${float(sg.get('Entry $', 0)):.2f}, last ${float(sg.get('Last $', 0)):.2f} "
+                    f"(**{float(sg.get('Unrealized %', 0)):+.2f}%** unrealized). Hold until exit; ignore new signals."
                 )
             elif state in ("BUY", "ENTER"):
                 st.warning(
-                    f"**BUY SIGNAL — {sg['Ticker']}** — biggest loser of the day. "
-                    f"Last ${sg['Last $']:.2f}. This would trigger the buy alert."
+                    f"**BUY SIGNAL — {sg['Ticker']}** — most oversold in universe today. "
+                    f"Last ${float(sg.get('Last $', 0)):.2f}. Alpaca trader will place a market buy order tonight."
                 )
             else:
-                st.info("**CASH** — no candidate fired the 3-BB consensus today.")
+                st.info("**CASH** — no candidate is below the entry threshold today.")
 
         # True peak-to-trough drawdown from the daily equity curve (conventional
         # definition: each trough vs its own prior peak). The engine's CSV "Max DD %"
@@ -2368,16 +2388,18 @@ with tab_cs:
                 if signal is not None and not signal.empty and \
                         str(signal.iloc[0]["State"]).upper() == "HOLDING":
                     sg = signal.iloc[0]
-                    tl = pd.concat([tl, pd.DataFrame([{
-                        "Ticker":     sg["Ticker"],
-                        "Entry Date": pd.to_datetime(sg["Entry Date"]),
-                        "Exit Date":  pd.to_datetime(through),
-                        "Return %":   float(sg["Unrealized %"]),
-                        "Hold Days":  (pd.to_datetime(through)
-                                       - pd.to_datetime(sg["Entry Date"])).days,
-                        "Reason":     "open",
-                        "Outcome":    "Open",
-                    }])], ignore_index=True)
+                    _entry_date_raw = sg.get("Entry Date", None)
+                    if _entry_date_raw and str(_entry_date_raw) not in ("—", "nan", "None", ""):
+                        _entry_dt = pd.to_datetime(_entry_date_raw)
+                        tl = pd.concat([tl, pd.DataFrame([{
+                            "Ticker":     sg["Ticker"],
+                            "Entry Date": _entry_dt,
+                            "Exit Date":  pd.to_datetime(through),
+                            "Return %":   float(sg.get("Unrealized %", 0)),
+                            "Hold Days":  (pd.to_datetime(through) - _entry_dt).days,
+                            "Reason":     "open",
+                            "Outcome":    "Open",
+                        }])], ignore_index=True)
 
                 lane_order = (
                     tl.groupby("Ticker")["Entry Date"].min().sort_values().index.tolist()

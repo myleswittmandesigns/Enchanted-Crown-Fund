@@ -95,7 +95,7 @@ def compute_entry_signal(params: dict) -> tuple[str, float]:
             zs, valid = [], True
             for n in [n1, n2, n3]:
                 sma = close.rolling(n).mean()
-                std = close.rolling(n).std()
+                std = close.rolling(n).std(ddof=0)
                 if pd.isna(sma.iloc[-1]) or pd.isna(std.iloc[-1]) or std.iloc[-1] < 1e-9:
                     valid = False; break
                 zs.append(float((close.iloc[-1] - sma.iloc[-1]) / std.iloc[-1]))
@@ -162,7 +162,7 @@ def compute_exit_signal(ticker: str, entry_price: float, params: dict) -> tuple[
         # Take profit: crossover on any of the 3 upper bands
         for n in [n1, n2, n3]:
             sma   = close.rolling(n).mean()
-            std   = close.rolling(n).std()
+            std   = close.rolling(n).std(ddof=0)
             upper = (sma + k * std)
             if pd.isna(upper.iloc[-1]) or pd.isna(upper.iloc[-2]):
                 continue
