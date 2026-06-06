@@ -2244,6 +2244,34 @@ def main_cross_sectional():
     print(f"  Signal as of {dates[last].date()}: {signal['State']}"
           + (f" {signal['Ticker']}" if signal.get("Ticker") else ""))
 
+    # Live Alpaca position check (optional — requires env vars set)
+    alpaca_ticker     = None
+    alpaca_entry      = None
+    alpaca_qty        = None
+    alpaca_mkt_value  = None
+    _alpaca_api_key   = os.environ.get("ALPACA_API_KEY", "")
+    _alpaca_secret    = os.environ.get("ALPACA_SECRET_KEY", "")
+    if _alpaca_api_key and _alpaca_secret:
+        try:
+            from alpaca.trading.client import TradingClient
+            _client    = TradingClient(_alpaca_api_key, _alpaca_secret, paper=True)
+            _positions = _client.get_all_positions()
+            if _positions:
+                _pos           = _positions[0]
+                alpaca_ticker  = _pos.symbol
+                alpaca_entry   = float(_pos.avg_entry_price)
+                alpaca_qty     = float(_pos.qty)
+                alpaca_mkt_value = float(_pos.market_value)
+                print(f"  Alpaca live position : {alpaca_ticker}  "
+                      f"entry=${alpaca_entry:.2f}  qty={alpaca_qty:.4f}  "
+                      f"mkt=${alpaca_mkt_value:,.2f}")
+            else:
+                print("  Alpaca live position : FLAT (no open positions)")
+        except Exception as _e:
+            print(f"  Alpaca live position : unavailable ({_e})")
+    else:
+        print("  Alpaca live position : skipped (API keys not set)")
+
     # Walk-forward on top-N global combos
     top_combos = list(df_all.nlargest(CS_WF_TOP_COMBOS, "Score")[["N_base", "Gap", "K", "Stop %"]]
                       .itertuples(index=False, name=None))
@@ -2267,8 +2295,15 @@ def main_cross_sectional():
         "Trades": int(best["Trades"]), "Avg Hold Days": best["Avg Hold Days"],
         "WF Profitable": f"{wf_pos}/{len(wf)}",
         "Signal": signal["State"], "Signal Ticker": signal.get("Ticker"),
+        "Alpaca Ticker": alpaca_ticker, "Alpaca Entry $": alpaca_entry,
+        "Alpaca Qty": alpaca_qty, "Alpaca Mkt Value $": alpaca_mkt_value,
     }]).to_csv(OUT_DIR / f"cs_summary_{run_date}.csv", index=False)
-    pd.DataFrame([signal]).to_csv(OUT_DIR / f"cs_signal_{run_date}.csv", index=False)
+    signal_with_alpaca = {**signal,
+                          "Alpaca Ticker": alpaca_ticker,
+                          "Alpaca Entry $": alpaca_entry,
+                          "Alpaca Qty": alpaca_qty,
+                          "Alpaca Mkt Value $": alpaca_mkt_value}
+    pd.DataFrame([signal_with_alpaca]).to_csv(OUT_DIR / f"cs_signal_{run_date}.csv", index=False)
 
     print(f"  CSVs written to {OUT_DIR}/cs_*_{run_date}.csv")
 
