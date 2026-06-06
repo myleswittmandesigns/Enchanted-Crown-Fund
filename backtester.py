@@ -2221,48 +2221,49 @@ def main_cross_sectional():
     eq_dates = dates[max(n3, 1):n_days]
     equity_df = pd.DataFrame({"Date": eq_dates.strftime("%Y-%m-%d"), "Equity": detail["_equity"].round(2)})
 
-    # Today's signal — current state + biggest loser of the day
-    last = n_days - 1
-    masked_last = np.where(em[last] & np.isfinite(compz[last]), compz[last], np.inf)
-    biggest_loser_col = int(np.argmin(masked_last))
-    has_candidate     = np.isfinite(masked_last[biggest_loser_col])
-    fstate = detail["_final"]
-    if fstate["in_trade"]:
-        held_tk = tickers[fstate["held"]]
-        unreal  = (close_mat[last, fstate["held"]] / fstate["entry_price"] - 1) * 100
-        signal  = {"State": "HOLDING", "Ticker": held_tk,
-                   "Entry Date": dates[fstate["entry_idx"]].strftime("%Y-%m-%d"),
-                   "Entry $": round(fstate["entry_price"], 2),
-                   "Last $": round(close_mat[last, fstate["held"]], 2),
-                   "Unrealized %": round(unreal, 2)}
-    elif has_candidate:
-        signal  = {"State": "BUY", "Ticker": tickers[biggest_loser_col],
-                   "Composite z": round(float(masked_last[biggest_loser_col]), 2),
-                   "Last $": round(close_mat[last, biggest_loser_col], 2)}
-    else:
-        signal  = {"State": "CASH", "Ticker": None}
-    print(f"  Signal as of {dates[last].date()}: {signal['State']}"
-          + (f" {signal['Ticker']}" if signal.get("Ticker") else ""))
+    # Today's signal — driven by Alpaca's actual live state, not simulation state.
+    # The simulation's HOLDING state is intentionally ignored for signal output;
+    # it's an artifact of the replay and does not reflect reality.
+    #
+    # Rules:
+    #   Alpaca HOLDING X → check exit conditions → SELL or HOLDING (live)
+    #   Alpaca FLAT      → check today's Z-scores → BUY or CASH
+    #   No Alpaca keys   → only BUY or CASH from live Z-scores (never simulated HOLDING)
 
-    # Live Alpaca position check (optional — requires env vars set)
-    alpaca_ticker     = None
-    alpaca_entry      = None
-    alpaca_qty        = None
-    alpaca_mkt_value  = None
-    _alpaca_api_key   = os.environ.get("ALPACA_API_KEY", "")
-    _alpaca_secret    = os.environ.get("ALPACA_SECRET_KEY", "")
+    last = n_days - 1
+    masked_last       = np.where(em[last] & np.isfinite(compz[last]), compz[last], np.inf)
+    biggest_loser_col = int(np.argmin(masked_last))
+    has_candidate     = np.isfinite(masked_last[biggest_loser_col]) and masked_last[biggest_loser_col] <= -bk
+
+    # BUY candidate (valid regardless of who is holding what)
+    buy_signal = None
+    if has_candidate:
+        buy_signal = {"State": "BUY",
+                      "Ticker": tickers[biggest_loser_col],
+                      "Composite z": round(float(masked_last[biggest_loser_col]), 2),
+                      "Last $": round(close_mat[last, biggest_loser_col], 2)}
+
+    # Fetch live Alpaca position
+    alpaca_ticker    = None
+    alpaca_entry     = None
+    alpaca_qty       = None
+    alpaca_mkt_value = None
+    alpaca_available = False
+    _alpaca_api_key  = os.environ.get("ALPACA_API_KEY", "")
+    _alpaca_secret   = os.environ.get("ALPACA_SECRET_KEY", "")
     if _alpaca_api_key and _alpaca_secret:
         try:
             from alpaca.trading.client import TradingClient
             _client    = TradingClient(_alpaca_api_key, _alpaca_secret, paper=True)
             _positions = _client.get_all_positions()
+            alpaca_available = True
             if _positions:
-                _pos           = _positions[0]
-                alpaca_ticker  = _pos.symbol
-                alpaca_entry   = float(_pos.avg_entry_price)
-                alpaca_qty     = float(_pos.qty)
+                _pos             = _positions[0]
+                alpaca_ticker    = _pos.symbol
+                alpaca_entry     = float(_pos.avg_entry_price)
+                alpaca_qty       = float(_pos.qty)
                 alpaca_mkt_value = float(_pos.market_value)
-                print(f"  Alpaca live position : {alpaca_ticker}  "
+                print(f"  Alpaca live position : HOLDING {alpaca_ticker}  "
                       f"entry=${alpaca_entry:.2f}  qty={alpaca_qty:.4f}  "
                       f"mkt=${alpaca_mkt_value:,.2f}")
             else:
@@ -2271,6 +2272,52 @@ def main_cross_sectional():
             print(f"  Alpaca live position : unavailable ({_e})")
     else:
         print("  Alpaca live position : skipped (API keys not set)")
+
+    # Build the actionable signal
+    if alpaca_available and alpaca_ticker:
+        # Alpaca is holding something — check exit conditions against today's bands
+        _exit_reason = None
+        _stop_level  = alpaca_entry * (1.0 - bs)
+        _c           = close_mat[last]
+        _c_prev      = close_mat[last - 1] if last > 0 else _c
+        _col         = tickers.index(alpaca_ticker) if alpaca_ticker in tickers else -1
+
+        # Stop loss check
+        if _col >= 0 and _c[_col] <= _stop_level:
+            _exit_reason = f"stop loss (close ${_c[_col]:.2f} <= stop ${_stop_level:.2f})"
+
+        # Take profit: upper BB crossover on any of N1/N2/N3
+        if _exit_reason is None and _col >= 0:
+            for _ub in [up1, up2, up3]:
+                if (_c[_col] > _ub[last, _col] and _c_prev[_col] <= _ub[last - 1, _col]):
+                    _exit_reason = f"take profit (crossed upper BB, upper=${_ub[last, _col]:.2f})"
+                    break
+
+        if _exit_reason:
+            signal = {"State": "SELL", "Ticker": alpaca_ticker,
+                      "Reason": _exit_reason,
+                      "Entry $": round(alpaca_entry, 2),
+                      "Last $": round(_c[_col] if _col >= 0 else 0.0, 2),
+                      "Qty": alpaca_qty}
+        else:
+            unreal = (close_mat[last, _col] / alpaca_entry - 1) * 100 if _col >= 0 else 0.0
+            signal = {"State": "HOLDING", "Ticker": alpaca_ticker,
+                      "Entry $": round(alpaca_entry, 2),
+                      "Last $": round(close_mat[last, _col] if _col >= 0 else 0.0, 2),
+                      "Unrealized %": round(unreal, 2),
+                      "Qty": alpaca_qty,
+                      "Mkt Value $": round(alpaca_mkt_value, 2),
+                      "Source": "Alpaca"}
+    elif alpaca_available and not alpaca_ticker:
+        # Alpaca confirmed flat — show BUY or CASH
+        signal = buy_signal if buy_signal else {"State": "CASH", "Ticker": None}
+    else:
+        # No Alpaca keys — only show BUY or CASH from live Z-scores
+        signal = buy_signal if buy_signal else {"State": "CASH", "Ticker": None}
+
+    print(f"  Signal as of {dates[last].date()}: {signal['State']}"
+          + (f" {signal['Ticker']}" if signal.get("Ticker") else "")
+          + (f" ({signal.get('Reason', '')})" if signal.get("Reason") else ""))
 
     # Walk-forward on top-N global combos
     top_combos = list(df_all.nlargest(CS_WF_TOP_COMBOS, "Score")[["N_base", "Gap", "K", "Stop %"]]
@@ -2295,15 +2342,8 @@ def main_cross_sectional():
         "Trades": int(best["Trades"]), "Avg Hold Days": best["Avg Hold Days"],
         "WF Profitable": f"{wf_pos}/{len(wf)}",
         "Signal": signal["State"], "Signal Ticker": signal.get("Ticker"),
-        "Alpaca Ticker": alpaca_ticker, "Alpaca Entry $": alpaca_entry,
-        "Alpaca Qty": alpaca_qty, "Alpaca Mkt Value $": alpaca_mkt_value,
     }]).to_csv(OUT_DIR / f"cs_summary_{run_date}.csv", index=False)
-    signal_with_alpaca = {**signal,
-                          "Alpaca Ticker": alpaca_ticker,
-                          "Alpaca Entry $": alpaca_entry,
-                          "Alpaca Qty": alpaca_qty,
-                          "Alpaca Mkt Value $": alpaca_mkt_value}
-    pd.DataFrame([signal_with_alpaca]).to_csv(OUT_DIR / f"cs_signal_{run_date}.csv", index=False)
+    pd.DataFrame([signal]).to_csv(OUT_DIR / f"cs_signal_{run_date}.csv", index=False)
 
     print(f"  CSVs written to {OUT_DIR}/cs_*_{run_date}.csv")
 
